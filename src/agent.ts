@@ -77,7 +77,7 @@ export const Agent: CreateAgentFn = <Name extends string, Value extends any, Typ
   } as TAgent<Name, Value>
 }
 
-Object.defineProperty(createAgent, Symbol.hasInstance, {
+Object.defineProperty(Agent, Symbol.hasInstance, {
   value: function (instance: any) {
     return isAgent(instance)
   },
