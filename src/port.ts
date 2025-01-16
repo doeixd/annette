@@ -50,10 +50,11 @@ export type Ports<TPorts extends IPort<string, PortTypes>[] = []> = {
 export function Port<Name extends string, Type extends PortTypes = 'aux'>(port: { name: Name, type: Type }): IPort<Name, Type>;
 export function Port<Name extends string, Type extends PortTypes = 'aux'>(name: Name, type: Type): IPort<Name, Type>;
 export function Port<Name extends string, Type extends PortTypes = 'aux'>(name: Name | { name: Name, type: Type }, type?: Type): IPort<Name, Type> {
-  if (typeof name === 'object' && 'name' in name && 'type' in name) {
-    let port = {
-      name: name.name,
-      type: name.type,
+  if (typeof name === 'object' && 'name' in name && 'type' in name && name?.name && name?.type && typeof name !== 'string') {
+    let n = name
+    let port = new class Port {
+      name = n.name
+      type =  n.type
     } as IPort<Name, Type>
 
     Object.defineProperty(port, Symbol.hasInstance, {

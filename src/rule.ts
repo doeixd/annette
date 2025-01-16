@@ -35,10 +35,10 @@ export function isRule(rule: any): rule is Rule {
 }
 
 export function Rule (name: string, connection: Connection, action: Action) {
-  const rule =  {
-    name,
-    connection,
-    action
+  const rule =  new class Rule {
+    name = name
+    connection = connection  
+    action = action
   } as Rule<typeof name, typeof connection, typeof action>
 
   Object.defineProperties(rule, {
