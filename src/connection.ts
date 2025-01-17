@@ -11,9 +11,18 @@ export interface IConnection <Name extends string = string, Source extends IAgen
   destinationPort: DestinationPort;
 }
 
-export type ConnectionKey <ConnectionName extends string, AgentOne extends string, AgentTwo extends string, AgentOnePort extends string, AgentTwoPort extends string> = 
-  `${AgentOne}.${AgentOnePort} -> ${AgentTwo}.${AgentTwoPort} (${ConnectionName})` | `${AgentTwo}.${AgentTwoPort} -> ${AgentOne}.${AgentOnePort} (${ConnectionName})`
 
+// export type ConnectionKey <ConnectionName extends string, AgentOne extends string, AgentTwo extends string, AgentOnePort extends string, AgentTwoPort extends string> = 
+//   `${AgentOne}.${AgentOnePort} -> ${AgentTwo}.${AgentTwoPort} (${ConnectionName})` | `${AgentTwo}.${AgentTwoPort} -> ${AgentOne}.${AgentOnePort} (${ConnectionName})`
+
+export type ConnectionKey <C extends IConnection> =  
+  C extends IConnection<infer N, infer S, infer D, infer SP, infer DP> 
+    ?  `${N} -> ${S['name']}:-:${SP['name']} -> ${D['name']}:-:${DP['name']}`
+    : never
+
+export function ConnectionKey<C extends IConnection> (c: C): ConnectionKey<C> {
+  return `${c.name} -> ${c.source.name}:-:${c.sourcePort.name} -> ${c.destination.name}:-:${c.destinationPort.name}` as ConnectionKey<C>
+}
 
 export type Connections<Source extends IAgent, C extends IConnection<string, Source, IAgent>[] = []> = {
   [K in C[number]['name']]: C[number]
