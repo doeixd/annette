@@ -1,31 +1,56 @@
 import { Connections } from "./connection";
-import { BoundPort, BoundPorts, isHasMainPort, isPort, IPort, Ports, Port } from "./port";
+import { BoundPort, BoundPortsMap, isHasMainPort, isPort, IPort, Ports, Port, PortsHasMainPort, UnboundPortArray, UnboundPortDefObj, isUnboundPortArray, isUnboundPortDefObj } from "./port";
 
-export type AgentPorts <A extends TAgent, BP extends BoundPorts<A>> = {
-  [K in BP[number]['name']]: BP[number]
-} & Record<BP[number]['name'], BP[number]>
 
-export function isAgentPorts(ports: any): ports is AgentPorts<TAgent, BoundPorts<TAgent>> {
-  if (typeof ports !== 'object') {
-    return false
-  } else {
-    return Object.entries(ports).every(([key, port]) => {
-      return key == port && isPort(port)
-    })
-  }
-}
+// export type AgentPorts <A extends TAgent, BP extends BoundPortsMap<A>> = {
+//   [K in keyof BP()]: BP[number]
+// } & Record<BP[number]['name'], BP[number]>
 
-export interface TAgent<Name extends string = string, Value extends any = any, Type extends string = string> {
+// export function isAgentPorts(ports: any): ports is AgentPorts<TAgent, BoundPortsMap<TAgent>> {
+//   if (typeof ports !== 'object') {
+//     return false
+//   } else {
+//     return Object.entries(ports).every(([key, port]) => {
+//       return key == port && isPort(port)
+//     })
+//   }
+// }
+
+export interface TAgent<Name extends string = string, Value extends any = any, Type extends string = string, P extends UnboundPortArray | UnboundPortDefObject> {
   name: Name;
   value: Value; 
-  ports: AgentPorts<TAgent<Name, Value, Type>, BoundPorts<TAgent<Name, Value, Type>>>;
+  ports: BoundPortsMap<TAgent<Name, Value, Type>>; 
   type: Type;
   connections: Connections<TAgent<Name, Value, Type>> ;
 }
 
-export type CreateAgentFn = <Name extends string, Value extends any, Type extends string = string>(name: Name, value: Value, ports?: BoundPorts<TAgent<Name, Value>>, type?: Type) => TAgent<Name, Value>
+export type CreateAgentFn = <Name extends string, Value extends any, Type extends string = string>(name: Name, value: Value, ports?: BoundPortsMap<TAgent<Name, Value>>, type?: Type) => TAgent<Name, Value>
 
-export const Agent: CreateAgentFn = <Name extends string, Value extends any, Type extends string = string>(name: Name, value: Value, ports?: Ports, type?: Type ) => {
+export const Agent: CreateAgentFn = <Name extends string, Value extends any, Type extends string = string, P extends UnboundPortArray | UnboundPortDefObj  = UnboundPortArray>(name: Name, value: Value, ports?: P, type?: Type ) => {
+  let agent = new class Agent {
+    name = name
+    value = value
+    type = type || 'agent'
+  } 
+
+
+  if (isUnboundPortArray(ports)) {
+    let p = ports.forEach(i => {
+      
+      i.agent = 
+
+    })
+  }
+
+
+  if (isUnboundPortDefObj(ports)) {
+
+
+
+
+  }
+
+
   if (!ports || !isHasMainPort(ports)) {
     let agent = new class Agent {
       name = name
@@ -33,7 +58,7 @@ export const Agent: CreateAgentFn = <Name extends string, Value extends any, Typ
       type = type || 'agent'
       ports = {
         'main': Port({'name': 'main', 'type': 'main'})
-      } as AgentPorts<TAgent<Name, Value>, BoundPorts<TAgent<Name, Value>>>
+      } as AgentPorts<TAgent<Name, Value>, BoundPortsMap<TAgent<Name, Value>>>
     } as TAgent<Name, Value>
 
     Object.defineProperties(agent, {
@@ -68,7 +93,7 @@ export const Agent: CreateAgentFn = <Name extends string, Value extends any, Typ
     // @ts-expect-error
     acc[port.name as keyof typeof acc] = port
     return acc
-  }, {} as AgentPorts<TAgent<Name, Value>, BoundPorts<TAgent<Name, Value>>>)
+  }, {} as AgentPorts<TAgent<Name, Value>, BoundPortsMap<TAgent<Name, Value>>>)
 
   return {
     name,

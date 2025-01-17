@@ -1,19 +1,19 @@
-import { Connection } from "./connection";
+import { IConnection } from "./connection";
 import { TAgent } from "./agent";
 
-export type ActionReturn = void | (TAgent | Connection)[]
+export type ActionReturn = void | (TAgent | IConnection)[]
 
 export type Action<
   Source extends TAgent = TAgent, 
   Destination extends TAgent = TAgent
 > = 
-  ((connection: Connection<string, Source, Destination>) => ActionReturn) 
+  ((connection: IConnection<string, Source, Destination>) => ActionReturn) 
   | ((source: Source, destination: Destination) => ActionReturn)
   | ((sourceName: Source['name'], destinationName: Destination['name']) => ActionReturn)
 
 export interface Rule<
   Name extends string = string, 
-  TConnection extends Connection<string, any, any, any, any> = Connection,
+  TConnection extends IConnection<string, any, any, any, any> = IConnection,
   TAction extends Action = Action
 > {
   name: Name;
@@ -22,7 +22,7 @@ export interface Rule<
 }
 
 export type CreateRuleFn = 
-  <Name extends string, Source extends TAgent, Destination extends TAgent, TAction extends Action, TConnection extends Connection<string, Source, Destination>>(name: Name, connection: TConnection, action: Action<Source, Destination>) => Rule<Name, TConnection, TAction> 
+  <Name extends string, Source extends TAgent, Destination extends TAgent, TAction extends Action, TConnection extends IConnection<string, Source, Destination>>(name: Name, connection: TConnection, action: Action<Source, Destination>) => Rule<Name, TConnection, TAction> 
   | ((name: Name, connection: [source: string, destination: string], action: TAction) => Rule<Name, TConnection, TAction>)
 
 
@@ -34,7 +34,7 @@ export function isRule(rule: any): rule is Rule {
   }
 }
 
-export function Rule (name: string, connection: Connection, action: Action) {
+export function Rule (name: string, connection: IConnection, action: Action) {
   const rule =  new class Rule {
     name = name
     connection = connection  

@@ -25,9 +25,11 @@ export const Network: CreateNetworkFn = (name) => {
 
   
   type ConnectArg = BoundPort | string | TAgent;
+
   const connect: ConnectFn = (source: ConnectArg, destination: ConnectArg, name: string) => {
     const usingPorts = isBoundPort(source) && isBoundPort(destination);
     if (usingPorts) {
+      const connection = Connection
       return {
         source,
         destination
