@@ -1,11 +1,11 @@
 import { IConnection } from "./connection";
-import { TAgent } from "./agent";
+import { IAgent } from "./agent";
 
-export type ActionReturn = void | (TAgent | IConnection)[]
+export type ActionReturn = void | (IAgent | IConnection)[]
 
 export type Action<
-  Source extends TAgent = TAgent, 
-  Destination extends TAgent = TAgent
+  Source extends IAgent = IAgent, 
+  Destination extends IAgent = IAgent
 > = 
   ((connection: IConnection<string, Source, Destination>) => ActionReturn) 
   | ((source: Source, destination: Destination) => ActionReturn)
@@ -22,7 +22,7 @@ export interface Rule<
 }
 
 export type CreateRuleFn = 
-  <Name extends string, Source extends TAgent, Destination extends TAgent, TAction extends Action, TConnection extends IConnection<string, Source, Destination>>(name: Name, connection: TConnection, action: Action<Source, Destination>) => Rule<Name, TConnection, TAction> 
+  <Name extends string, Source extends IAgent, Destination extends IAgent, TAction extends Action, TConnection extends IConnection<string, Source, Destination>>(name: Name, connection: TConnection, action: Action<Source, Destination>) => Rule<Name, TConnection, TAction> 
   | ((name: Name, connection: [source: string, destination: string], action: TAction) => Rule<Name, TConnection, TAction>)
 
 

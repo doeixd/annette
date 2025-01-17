@@ -1,4 +1,4 @@
-import { TAgent, AgentPorts, isAgent } from "./agent";
+import { IAgent, isAgent } from "./agent";
 
 export type PortTypes = 'main' | 'aux'
 
@@ -25,13 +25,32 @@ export function isPort(port: any): port is IPort<string, PortTypes> {
   }
 }
 
-export interface BoundPort<A extends TAgent = TAgent, Name extends string = string, Type extends PortTypes = PortTypes>  {
+export interface IBoundPort<A extends IAgent = IAgent, Name extends string = string, Type extends PortTypes = PortTypes>  {
   name: Name;
   type: Type;
   agent: A;
 }
 
-export function isBoundPort(port: any): port is BoundPort {
+export function BoundPort<P extends IPort, A extends IAgent> (port: P, agent: A): IBoundPort<A, P['name']> {
+  // if (isPort(port) && isAgent(agent)) {
+  let boundPort = new class BoundPort implements IBoundPort<A, P['name'], P['type']> {
+    name = port.name
+    type = port.type
+    agent = agent
+  } 
+
+  Object.defineProperty(boundPort, Symbol.hasInstance, {
+    value: function (instance: any) {
+      return isBoundPort(instance)
+    },
+    enumerable: false
+  })
+
+  return boundPort
+// } 
+}
+
+export function isBoundPort(port: any): port is IBoundPort {
   if (typeof port !== 'object') {
     return false
   } else {
@@ -39,18 +58,65 @@ export function isBoundPort(port: any): port is BoundPort {
   }
 }
 
-export type BoundPortsMap<A extends TAgent, TPorts extends BoundPort<A, string, PortTypes>[] = []> = {
-  [K in TPorts[number]['name']]: TPorts[number]
+
+export type BoundPortArray <A extends IAgent = IAgent, U extends PortArray | PortsMap | PortsDefObj = PortArray | PortsMap | PortsDefObj, M = UnboundPortsMap<U>> = UniqueNameArray<{
+  [K in Extract<keyof M, string>]: M[K] extends IPort ? IBoundPort<A, K, M[K]['type']> : never
+}[Extract<keyof M, string>][]>
+
+export type BoundPortsMap<A extends IAgent, U extends PortArray | PortsMap | PortsDefObj, M = UnboundPortsMap<U>> = {
+  [K in Extract<keyof M, string>]: M[K] extends IPort ? IBoundPort<A, K, M[K]['type']> : never
 }
+
+export const createBoundPortsMap = <A extends IAgent, P extends PortArray | PortsDefObj | PortsMap>(agent: A, ports: P): BoundPortsMap<A, P> & PortsHasMainPort<BoundPortsMap<A, P>> => {
+  if (!isAgent(agent)) {
+    throw new Error('Invalid agent provided')
+  }
+
+  if (isPortArray(ports)) {
+    let a = Object.fromEntries(ports.map((port) => {
+      return [port.name, BoundPort(port, agent)]
+     })) as BoundPortsMap<A, P>
+
+     let m = addMainPortIfNotExists(a)
+
+     return m
+  }
+
+  if (isPortsDefObj(ports)) {
+    let a = Object.fromEntries(Object.entries(ports).map(([key, type]) => {
+      return [key, BoundPort({ name: key, type: type }, agent)]
+    })) as BoundPortsMap<A, P>
+
+    let m = addMainPortIfNotExists(a)
+
+    return m
+  }
+
+  if (isPortsMap(ports)) {
+    let a = Object.fromEntries(Object.entries(ports).map(([key, port]) => {
+      return [key, BoundPort({name: port.name, type: port.type}, agent)]
+    })) as BoundPortsMap<A, P>
+
+    let m = addMainPortIfNotExists(a)
+
+    return m
+  }
+
+  throw new Error('Invalid ports provided')
+}
+
+// export type BoundPortsMap<A extends TAgent, TPorts extends IBoundPort<A, string, PortTypes>[] = []> = {
+//   [K in TPorts[number]['name']]: TPorts[number]
+// }
 //  & Array<TPorts[number] & BoundPort<A, string, PortTypes>>
 
 
 
-export type PortsMap<TPorts extends IPort<string, PortTypes>[] = []> = {
+export type PortsMap<TPorts extends IPort<string, PortTypes>[] = IPort<string, PortTypes>[]> = {
   [K in TPorts[number]['name']]: TPorts[number]
 } 
 
-export type PortsDefObj<TPorts extends IPort<string, PortTypes>[] = []> = {
+export type PortsDefObj<TPorts extends IPort<string, PortTypes>[] =  IPort<string, PortTypes>[]> = {
   [K in TPorts[number]['name']]: TPorts[number]['type']
 } 
 
@@ -72,18 +138,117 @@ export function isUnboundPortArray (arr: any): arr is UnboundPortArray {
   return Object.values(arr).every(o => typeof o == 'object' && 'type' in o && isPortType(o.type) && typeof o?.agent == 'undefined' && typeof o?.name == 'string')
 }
 
-export type PortArray = IPort<string>[]
+export type StripAgentFromBoundPort <P extends IBoundPort> = UnboundPort<{ name: P['name'], type: P['type'] }>
 
-export type Ports = PortsMap | PortsDefObj | PortArray
+export type StripAgentFromPortArray <P extends BoundPortArray | PortArray> = UnboundPortArray<{
+  [K in keyof P]: 
+    P[K] extends IBoundPort 
+      ? StripAgentFromBoundPort<P[K]> 
+      : P[K] extends IPort 
+        ? UnboundPort<{name: P[K]['name'], type: P[K]['type']}> 
+        : never
+}[number][]>
 
-export type UnboundPort <P extends IPort = IPort> = Omit<P, 'agent'>
 
-export type UnboundPortArray <P extends UnboundPort[] = UnboundPort[]> = P
+type UniqueNameArray<T extends { name: string }[]> = T extends { [K in keyof T]: { name: T[K]["name"] } } 
+  ? { [K in keyof T]: T[K] } extends infer U 
+    ? Extract<U, any[]> & { [K in keyof T]: T[K] }
+    : never 
+  : never;
+
+export type PortArray <PA extends IPort[] = IPort[]> = UniqueNameArray<PA>
+
+export type IPorts <P extends PortsMap | PortsDefObj | PortArray = PortsMap | PortsDefObj | PortArray> =
+  P extends PortsMap 
+    ? PortsMapWithPreservedKinds<P> 
+    : P extends PortsDefObj 
+      ? PortsMapFromPortsDefObj<P>
+      : P extends PortArray
+        ? PortsMapFromPortArray<P> 
+        : never
+
+export type PortsWithAddedPort <O extends PortsMap | PortsDefObj | PortArray, P extends IPort> = 
+  O extends PortsMap 
+    ? O & { [K in P['name']]: P }
+    : O extends PortsDefObj 
+      ? O & { [K in P['name']]: P['type'] }
+      : O extends PortArray
+        ? [...O, P] & UniqueNameArray<[...O, P]>
+        : never
+
+
+export function addPortToPorts <O extends PortsMap | PortsDefObj | PortArray, P extends IPort> (ports: O, port: P): PortsWithAddedPort<O, P> {
+  if (isPortsMap(ports)) {
+    ports[port.name] = port
+    return ports as PortsWithAddedPort<O, P>
+  }
+
+  if (isPortsDefObj(ports)) {
+    ports[port.name] = port.type
+    return ports as PortsWithAddedPort<O, P> 
+  }
+
+  if (isPortArray(ports)) {
+    ports.push(port)
+    return ports as PortsWithAddedPort<O, P> 
+  }
+
+  throw new Error('Invalid ports provided')
+}
+
+
+export type PortsMapWithPreservedKinds <P extends PortsMap> = {
+  [K in keyof P]: P[K] extends IBoundPort ? P[K] : P[K] extends UnboundPort ? P[K] : P[K] extends IPort ? P[K] : never
+} 
+export type PortsMapFromPortArray<P extends PortArray> = {
+  [K in P[number] as K['name']]: K extends IBoundPort ? K : K extends UnboundPort ? K : K extends IPort ? K : never
+}
+export type PortsMapFromPortsDefObj <P extends PortsDefObj> = {
+ [K in Extract<keyof P, string>]: P[K] extends PortTypes ? IPort<K, P[K]> : never 
+}
+
+export function Ports<P extends PortsMap | PortsDefObj | PortArray>(ports: P): IPorts<P> {
+  if (isPortsDefObj(ports)) {
+    let p: any = {} 
+    for (let [key, type] of Object.entries(ports)) {
+      p[key] = Port(key, type)
+    }
+
+    return p as PortsMapFromPortsDefObj<typeof ports> & IPorts<P>
+  }
+
+  if (isPortArray(ports)) {
+    let p: any = {} 
+    for (let port of ports) {
+      p[port.name] = port
+    }
+
+    return p as PortsMapFromPortArray<typeof ports> & IPorts<P>
+  }
+
+  if (isPortsMap(ports)) {
+    return ports as IPorts<P>
+  }
+
+  throw new Error('Invalid ports provided')
+}
+
+export type UnboundPort <P extends IPort = IPort> = Omit<P, 'agent'> & { name: P['name'], type: P['type'] }
+
+export type UnboundPortArray <P extends IPort[] = IPort[]> = UniqueNameArray<{
+  [K in Extract<keyof P, number>]: UnboundPort<P[K]>
+}[number][]>
 
 export type UnboundPortDefObj <N extends string = string> = Record<N, PortTypes> 
 
-export type UnboundPorts <U extends UnboundPortArray | UnboundPortDefObj> =
- U extends UnboundPortArray ? U : U extends UnboundPort
+export type UnboundPortsMap <P extends PortsMap | PortsDefObj | PortArray> = 
+  P extends PortsMap
+    ? { [K in keyof P]: UnboundPort<P[K]> }
+    : P extends PortsDefObj
+      ? { [K in Extract<keyof P, string>]: UnboundPort<IPort<K, P[K]>> }
+      : P extends PortArray
+        ? { [K in P[number] as K['name']]:  UnboundPort<K> }
+        : never
 
 
 // & Array<TPorts[number] & IPort<string, PortTypes>>
@@ -124,31 +289,70 @@ export function Port<Name extends string, Type extends PortTypes = 'aux'>(name: 
   return port
 }
 
-export type DefaultPorts = Ports<IPort<string, 'main'>[]>
+export type DefaultPorts = IPorts<IPort<string, 'main'>[]>
 
-export type PortsHasMainPort<P extends Ports = DefaultPorts> = P & {
+export type PortsHasMainPort<P extends PortArray | PortsMap | PortsDefObj> = P & {
   [I in keyof P]: P[I] extends { type: PortTypes } 
     ? P[I] & { type: 'main' }
     : P[I]
 };
 
-export function isHasMainPort<P extends Ports | BoundPortsMap<TAgent>>(ports: P): ports is PortsHasMainPort<P> {
-  return ports.some((port: IPort<string, PortTypes>) => port.type === 'main')
+export function isHasMainPort<P extends IPorts>(ports: P): ports is PortsHasMainPort<P> {
+  const p = Ports(ports)
+  return Object.values(p).some((port) => port.type === 'main')
 }
 
-export type AgentPortsHasMainPort<A extends TAgent> = AgentPorts<A, BoundPortsMap<A>> & {
-  [I in keyof AgentPorts<A, BoundPortsMap<A>>]: AgentPorts<A, BoundPortsMap<A>>[I] extends { type: PortTypes } 
-    ? AgentPorts<A, BoundPortsMap<A>>[I] & { type: 'main' }
-    : AgentPorts<A, BoundPortsMap<A>>[I]
-} & Record<AgentPorts<A, BoundPortsMap<A>>[keyof AgentPorts<A, BoundPortsMap<A>>]['name'], AgentPorts<A, BoundPortsMap<A>>[keyof AgentPorts<A, BoundPortsMap<A>>]>
-
-export function isAgentPortsHasMainPort<A extends TAgent>(ports: any): ports is AgentPortsHasMainPort<A> {
+export function isPortsMap(ports: any): ports is PortsMap {
   if (typeof ports !== 'object') {
     return false
   } else {
     return Object.entries(ports).every(([key, port]) => {
-      return key == port && isPort(port)
-    }) && isHasMainPort(Object.values(ports))
+      if (port && typeof key == 'string' && typeof port == 'object' && 'name' in port ) {
+        return key == port['name'] && isPort(port)
+      }
+      return false
+    })
   }
 }
+
+export function isPortsDefObj(ports: object): ports is PortsDefObj {
+  if (typeof ports !== 'object') {
+    return false
+  } else {
+    return Object.entries(ports).every(([key, port]) => {
+      if (port && typeof key == 'string' && typeof port == 'string') {
+        return isPortType(port)
+      }
+      return false
+    })
+  }
+}
+
+export function isPortArray(ports: any): ports is PortArray {
+  if (!Array.isArray(ports)) {
+    return false
+  } else {
+    return ports.every(port => isPort(port))
+  }
+}
+
+
+
+export function addMainPortIfNotExists<P extends PortsMap | PortsDefObj | PortArray>(ports: P): PortsHasMainPort<P> {
+  let p = Ports(ports) 
+
+  const alreadyHasMainPortKey = 'main' in p
+  const alreadyHasMainPortValue = Object.values(ports).some(port => port.type === 'main')
+  if (alreadyHasMainPortValue) {
+    return ports as PortsHasMainPort<P>
+  }
+
+  let key = alreadyHasMainPortKey ? `main-${Date.now()}` : 'main';
+  let port = Port(key, 'main');
+
+  let n = p as IPorts<PortsWithAddedPort<typeof p, typeof port>> & PortsHasMainPort<P>
+
+  return n 
+}
+
 

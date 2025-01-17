@@ -1,7 +1,7 @@
-import { isAgent, TAgent } from "./agent";
-import { BoundPort, IPort, isBoundPort } from "./port";
+import { isAgent, IAgent } from "./agent";
+import { IBoundPort, IPort, isBoundPort, PortsDefObj, PortsMap, PortTypes } from "./port";
 
-export interface IConnection <Name extends string = string, Source extends TAgent<string, any> = TAgent, Destination extends TAgent<string, any> = TAgent, SourcePort extends Source['ports'][keyof Source['ports']] = Source['ports'][keyof Source['ports']], DestinationPort extends Destination['ports'][keyof Destination['ports']] = Destination['ports'][keyof Destination['ports']]> {
+export interface IConnection <Name extends string = string, Source extends IAgent<string, any> = IAgent, Destination extends IAgent<string, any> = IAgent, SourcePort extends Source['ports'][keyof Source['ports']] = Source['ports'][keyof Source['ports']], DestinationPort extends Destination['ports'][keyof Destination['ports']] = Destination['ports'][keyof Destination['ports']]> {
   name: Name;
 
   source: Source;
@@ -15,97 +15,114 @@ export type ConnectionKey <ConnectionName extends string, AgentOne extends strin
   `${AgentOne}.${AgentOnePort} -> ${AgentTwo}.${AgentTwoPort} (${ConnectionName})` | `${AgentTwo}.${AgentTwoPort} -> ${AgentOne}.${AgentOnePort} (${ConnectionName})`
 
 
-export type Connections<Source extends TAgent, C extends IConnection<string, Source, TAgent>[] = []> = {
+export type Connections<Source extends IAgent, C extends IConnection<string, Source, IAgent>[] = []> = {
   [K in C[number]['name']]: C[number]
 }
 
 export type ConnectFn = (
-  ((sourcePort: BoundPort, destinationPort: BoundPort, name: string) => (
-    typeof sourcePort extends BoundPort<infer SA, infer SN, infer ST> 
-    ? typeof destinationPort extends BoundPort<infer DA, infer DN, infer DT>
-    ? IConnection<typeof name, SA, DA, Extract<SA['ports'][keyof SA['ports']], BoundPort<SA, SN>>, Extract<DA['ports'][keyof DA['ports']], BoundPort<DA, DN>>>
+  ((sourcePort: IBoundPort, destinationPort: IBoundPort, name: string) => (
+    typeof sourcePort extends IBoundPort<infer SA, infer SN, infer ST> 
+    ? typeof destinationPort extends IBoundPort<infer DA, infer DN, infer DT>
+    ? IConnection<typeof name, SA, DA, Extract<SA['ports'][keyof SA['ports']], IBoundPort<SA, SN>>, Extract<DA['ports'][keyof DA['ports']], IBoundPort<DA, DN>>>
     : never
     : never
   )) 
-  | (<Source extends TAgent, Destination extends TAgent, Name extends string = string>(source: Source, destination: Destination, name: Name) => IConnection<Name, Source, Destination>)
-  | (<Source extends string = string, Destination extends string = string, Name extends string = string>(source: Source, destination: Destination, name: string) => IConnection<Name, TAgent<Source>, TAgent<Destination>>)
+  | (<Source extends IAgent, Destination extends IAgent, Name extends string = string>(source: Source, destination: Destination, name: Name) => IConnection<Name, Source, Destination>)
+  | (<Source extends string = string, Destination extends string = string, Name extends string = string>(source: Source, destination: Destination, name: string) => IConnection<Name, IAgent<Source>, IAgent<Destination>>)
 );
 
 
 export type DisconnectFn = (
-  ((sourcePort: BoundPort, destinationPort: BoundPort) => (
-    typeof sourcePort extends BoundPort<infer SA, infer SN, infer ST> 
-    ? typeof destinationPort extends BoundPort<infer DA, infer DN, infer DT>
+  ((sourcePort: IBoundPort, destinationPort: IBoundPort) => (
+    typeof sourcePort extends IBoundPort<infer SA, infer SN, infer ST> 
+    ? typeof destinationPort extends IBoundPort<infer DA, infer DN, infer DT>
     ? void
     : never
     : never
   )) 
-  | (<Source extends TAgent, Destination extends TAgent, Name extends string = string>(source: Source, destination: Destination) => void)
+  | (<Source extends IAgent, Destination extends IAgent, Name extends string = string>(source: Source, destination: Destination) => void)
 );
 
 
-export type ConnectArg = BoundPort | string | TAgent;
+export type ConnectArg = IBoundPort | string | IAgent;
 
-export const CreateConnection = ((source, destination, name: string) => {
-}) as ConnectFn
+// export const Connection = <Name extends string, Source extends IAgent, Destination extends IAgent, SourcePort extends IPort, DestinationPort extends IPort>(name: Name, source: Source, sourcePort: SourcePort, destination: Destination, destinationPort: DestinationPort) => {
+//   let connection = new class Connection implements IConnection<Name, Source, Destination, SourcePort, DestinationPort> {
+//     name = name;
+//     source = source;
+//     sourcePort = sourcePort;
+//     destination = destination;
+//     destinationPort = destinationPort;
+//   } as IConnection<Name, Source, Destination, SourcePort, DestinationPort>
+// }
 
-CreateConnection('')
 
-
-export function connect(
-  sourcePort: BoundPort,
-  destinationPort: BoundPort,
+export function Connection(
+  sourcePort: IBoundPort,
+  destinationPort: IBoundPort,
   name: string
-): typeof sourcePort extends BoundPort<infer SA, infer SN, infer ST> 
-  ? typeof destinationPort extends BoundPort<infer DA, infer DN, infer DT>
-    ? IConnection<typeof name, SA, DA, Extract<SA['ports'][keyof SA['ports']], BoundPort<SA, SN>>, Extract<DA['ports'][keyof DA['ports']], BoundPort<DA, DN>>>
+): typeof sourcePort extends IBoundPort<infer SA, infer SN, infer ST> 
+  ? typeof destinationPort extends IBoundPort<infer DA, infer DN, infer DT>
+    ? IConnection<typeof name, SA, DA, Extract<SA['ports'][keyof SA['ports']], IBoundPort<SA, SN>>, Extract<DA['ports'][keyof DA['ports']], IBoundPort<DA, DN>>>
     : never
   : never;
 
-export function connect<Source extends TAgent, Destination extends TAgent, Name extends string = string>(
+export function Connection<Source extends IAgent, Destination extends IAgent, Name extends string = string>(
   source: Source,
   destination: Destination,
   name: Name
 ): IConnection<Name, Source, Destination>;
 
-export function connect<Source extends string = string, Destination extends string = string, Name extends string = string>(
-  source: Source,
-  destination: Destination,
-  name: Name
-): IConnection<Name, TAgent<Source>, TAgent<Destination>>;
+// export function Connection<Source extends string = string, Destination extends string = string, Name extends string = string>(
+//   source: Source,
+//   destination: Destination,
+//   name: Name
+// ): IConnection<Name, IAgent<Source>, IAgent<Destination>>;
 
 // Implementation signature
-export function connect(
-  source: any,
-  destination: any,
-  name: any
+export function Connection(
+  source: IAgent | IBoundPort,
+  destination: IAgent | IBoundPort,
+  name: string 
 ) {
 
   const usingPorts = isBoundPort(source) && isBoundPort(destination);
 
-  if (usingPorts) {
-    return {
-      name,
+  if (usingPorts ) {
+    let sa = source.agent
+    let da = destination.agent
 
-      source: source.agent,
-      sourcePort: source,
+    let c = new class Connection implements IConnection<typeof name, typeof source['agent'], typeof destination['agent'], typeof source['agent']['ports'][typeof source.name], typeof source['agent']['ports'][typeof source.name]> {
+      name = name;
 
-      destination: destination.agent,
-      destinationPort: destination,
+      source = sa
+      sourcePort = sa['ports'][source.name]
+
+      destination = da
+      destinationPort = da['ports'][destination.name]
     }
+
+    return Object.seal(c)
   }
 
   const usingAgents = isAgent(source) && isAgent(destination)
 
   if (usingAgents) {
-    return {
+    let s = source
+    let d = destination
+    let c = new class Connection implements IConnection<typeof name, typeof source, typeof destination> {
+      name = name;
 
+      source = s 
+      sourcePort = s.ports.main 
 
+      destination = d
+      destinationPort = d.ports.main
     }
+
+    return Object.seal(c)
   }
 
-  return {
-    source,
-    destination
-  }
+  throw new Error('Invalid arguments')
 }
+
