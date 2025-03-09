@@ -1,8 +1,20 @@
-import { IAgent } from './agent';
-import { ConnectFn, DisconnectFn, IConnection } from './connection';
-import { IBoundPort, IPort, isBoundPort, PortsDefObj, PortsMap, PortTypes } from './port';
-import { Rule } from './rule';
-
+import { IAgent, isAgent } from "./agent";
+import {
+  ConnectFn,
+  Connection,
+  DisconnectFn,
+  IConnection,
+  isConnection,
+} from "./connection";
+import {
+  IBoundPort,
+  IPort,
+  isBoundPort,
+  PortsDefObj,
+  PortsMap,
+  PortTypes,
+} from "./port";
+import { Rule } from "./rule";
 
 // const ctx = {};
 
@@ -20,17 +32,20 @@ import { Rule } from './rule';
 
 // type ConnectionsSet = Set<IConnection>
 
-type Graph <A extends IAgent<any, any, any, any> = IAgent, C extends IConnection[] = IConnection<string, A>[]> = Map<A, C | IConnection[]>
-type AgentRulesMap <A extends IAgent = IAgent> = Map<A, Map<A, Rule<any, any>>>;
-type AgentMap <A extends IAgent = IAgent> = Map<A['name'], A>
+type Graph<
+  A extends IAgent<any, any, any, any> = IAgent,
+  C extends IConnection[] = IConnection<string, A>[],
+> = Map<A, C | IConnection[]>;
+type AgentRulesMap<A extends IAgent = IAgent> = Map<A, Map<A, Rule<any, any>>>;
+type AgentMap<A extends IAgent = IAgent> = Map<A["name"], A>;
 
 export interface INetwork<Name extends string, A extends IAgent = IAgent> {
   name: Name;
   agents: AgentMap<A>;
-  connections: Graph<A | IAgent>
+  connections: Graph<A | IAgent>;
   rules: AgentRulesMap;
-  names: Map<string, (A | IAgent)[]>
-  types: Map<string, (A | IAgent)[]>
+  names: Map<string, (A | IAgent)[]>;
+  types: Map<string, (A | IAgent)[]>;
   connect: ConnectFn;
   disconnect: DisconnectFn;
   reduce: () => void;
@@ -39,67 +54,120 @@ export interface INetwork<Name extends string, A extends IAgent = IAgent> {
 
 // export type CreateNetworkFn = <Name extends string, A extends IAgent = IAgent>(name: Name) => INetwork<Name>;
 
-export function Network <Name extends string, A extends IAgent = IAgent, R extends Rule = Rule, C extends IConnection = IConnection> 
-  (name: Name, agents?: A[], rules?: R[], connections?: C[]) {
-
+export function Network<
+  Name extends string,
+  A extends IAgent = IAgent,
+  R extends Rule = Rule,
+  C extends IConnection = IConnection,
+>(name: Name, agents?: A[], rules?: R[], connections?: C[]) {
   const agentsMap: AgentMap<A> = new Map();
   const rulesMap: AgentRulesMap<A> = new Map();
 
-  const types = new Map<string, IAgent[]>() 
-  const names = new Map<string, IAgent[]>()
+  const types = new Map<string, IAgent[]>();
+  const names = new Map<string, IAgent[]>();
 
-  const graph: Graph<A | IAgent, (C | IConnection)[]> = new Map()
+  const graph: Graph<A | IAgent, (C | IConnection)[]> = new Map();
+
+  const addConnectionToGraph = <C extends IConnection<any, any, any, any>>(connection: C) => {
+    if (graph.has(connection.source)) {
+      let list = graph.get(connection.source);
+      list?.push(connection);
+    } else {
+      let list = [connection];
+      graph.set(connection.source, list);
+    }
+  };
 
   if (Array.isArray(connections) && connections) {
     for (let connection of connections) {
-      const s = connection.source
-      const gc = graph.has(s) ? graph.get(s) : [connection]
-      if (gc) graph.set(s, gc)
+      const s = connection.source;
+      const gc = graph.has(s) ? graph.get(s) : [connection];
+      if (gc) graph.set(s, gc);
     }
   }
 
-  const n = new class Network implements INetwork<Name, A> {
-    name = name
-    agents = agentsMap
-    rules = rulesMap
-    names = names
-    types = types
-    connections = graph
-  }
+  const n = new (class Network implements INetwork<Name, A> {
+    name = name;
+    agents = agentsMap;
+    rules = rulesMap;
+    names = names;
+    types = types;
+    connections = graph;
+    connect = connect;
+    disconnect = disconnect;
+  })();
 
-
-  
   type ConnectArg = IBoundPort | string | IAgent;
 
-  function 
-
-  const connect: ConnectFn = (source: ConnectArg, destination: ConnectArg, name: string = 'connection') => {
+  function connect< 
+    S extends ConnectArg | IConnection,
+    D extends ConnectArg,
+    N extends string = string,
+  >
+    (
+    source: S,
+    destination: D,
+    name: N = "connection" as N,
+  ) {
     const usingPorts = isBoundPort(source) && isBoundPort(destination);
+
     if (usingPorts) {
-      const connection = Connection
-      return {
-        source,
-        destination
-      }
+      const connection = Connection(source, destination, name);
+
+      addConnectionToGraph(connection);
+
+      return connection;
     }
 
-    return {
-      source,
-      destination
+    const usingAgents = isAgent(source) && isAgent(destination);
+    if (usingAgents) {
+      const connection = Connection(source, destination, name);
+
+      addConnectionToGraph(connection);
+
+      return connection;
     }
+
+    const usingConnection = isConnection(source);
+    if (usingConnection) {
+      addConnectionToGraph(source);
+    }
+
+    throw new TypeError(
+      "Invalid arguments provided to network connect function",
+    );
   }
 
-  const disconnect: DisconnectFn = (source, destination) => {
-    return
+  function disconnect(
+    source: ConnectArg | IConnection,
+    destination: ConnectArg,
+    name: string = "connection",
+  ) {
+    const usingPorts = isBoundPort(source) && isBoundPort(destination);
+
+    if (usingPorts) {
+      const connection = Connection(source, destination, name);
+
+      if (graph.has(connection.source)) {
+        const list = graph.get(connection.source);
+        const foundIndex = list?.findIndex((subject) => {
+          return (
+            subject.destination == connection.destination &&
+            subject.destinationPort == connection.destinationPort &&
+            subject.sourcePort == connection.sourcePort
+          );
+        });
+      }
+    }
   }
 
   const reduce = () => {
-    return
-  }
+    return;
+  };
 
   const step = () => {
-    return
-  }
+    return;
+  };
 
   return {
     name,
@@ -108,6 +176,6 @@ export function Network <Name extends string, A extends IAgent = IAgent, R exten
     connect,
     disconnect,
     reduce,
-    step
-  }
-} 
+    step,
+  };
+}

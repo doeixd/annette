@@ -12,8 +12,8 @@ export type Action<
   | ((sourceName: Source['name'], destinationName: Destination['name']) => ActionReturn)
 
 export interface Rule<
-  Name extends string = string, 
-  TConnection extends IConnection<string, any, any, any, any> = IConnection,
+  in out Name extends string = string, 
+  in out TConnection extends IConnection<string, any, any, any, any> = IConnection,
   TAction extends Action = Action
 > {
   name: Name;
@@ -34,12 +34,12 @@ export function isRule(rule: any): rule is Rule {
   }
 }
 
-export function Rule (name: string, connection: IConnection, action: Action) {
+export function Rule<N extends string, C extends IConnection, A extends Action>(name: N, connection: C, action: A) {
   const rule =  new class Rule {
     name = name
     connection = connection  
     action = action
-  } as Rule<typeof name, typeof connection, typeof action>
+  } as Rule<N, typeof connection, typeof action>
 
   Object.defineProperties(rule, {
     name: {
@@ -65,6 +65,7 @@ export function Rule (name: string, connection: IConnection, action: Action) {
     }
   })
 
+  return rule
 }
 
 Object.defineProperty(Rule, Symbol.hasInstance, {
