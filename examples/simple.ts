@@ -1,23 +1,18 @@
-import { Agent } from '../src/agent';
-import { Network } from '../src/network';
+import { Agent } from "../src/agent";
+import { Network } from "../src/network";
+import { MainPortOfAgent } from "../src/port";
+import { Rule } from "../src/rule";
 
+const hello = Network("");
 
-const hello = Network('')
+const alice = Agent("Alice", "Alice");
+const bob = Agent("Bob", "Bob");
 
-const alice = Agent('Alice', 'Alice')
-const bob = Agent('Bob', 'Bob')
-
+var h: MainPortOfAgent<typeof alice.ports>;
 
 // this needs to add the agents if they don't exist
-hello.connect(alice, bob)
+const connection = hello.connect(alice, bob);
 
-hello.addRule(alice, bob, alias((alice, bob) => {
+const rule = Rule("alice-to-bob" as const, connection, () => {});
 
-}))
-
-
-
-
-
-
-
+hello.addRule(Rule(alice, bob));

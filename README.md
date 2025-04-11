@@ -1,3 +1,5 @@
+<img src="assets/logo.png" width="165"  />
+
 # Annette
 
 Annette is a JavaScript library based on [interaction nets](https://en.wikipedia.org/wiki/Interaction_nets). It can be used to model algebraic effects, state machines, a ui state management library, simple network synchronization libraries, or just as a source of entertainment.
