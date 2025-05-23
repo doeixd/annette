@@ -1,0 +1,160 @@
+# Annette Library: Interaction Nets as a Foundation for UI Libraries
+
+## The Overarching Philosophy
+- **Computation as Graph Rewriting**: All computation, state changes, side effects, and distributed interactions modeled as local, deterministic graph rewriting rules
+- **Elegance of Simplicity**: Complex behavior emerges from a minimal set of primitives and local rules
+- **Declarative Nature**: Structure and rules define behavior, not sequences of commands
+- **Locality is Key**: Each interaction only considers directly interacting agents, enabling parallelism and distribution
+- **Confluence**: Well-designed rules ensure the final state is independent of reduction order (crucial for CRDTs)
+
+## Current Implementation
+
+### Agent System
+- Agents are the fundamental building blocks with unique identities
+- Each agent has:
+  - `name`: Agent type name used for rule matching
+  - `value`: Mutable state property (can hold any JavaScript value)
+  - `ports`: Connection points to other agents
+  - `type`: Optional subtype for more specific rule matching
+  - `_agentId`: Unique UUID for identification
+- Created using the `Agent` factory function
+- State is directly stored in the agent's `value` property
+
+### Port System
+- Ports are connection points on agents
+- Each agent must have at least one "main" port
+- Port types:
+  - "main": Principal ports that trigger interactions
+  - "aux": Auxiliary ports for connections
+- Ports reference their parent agent
+- Unique port instance key: `${agentId}#${portName}`
+- Ports can be defined as arrays, objects, or maps
+
+### Connection System
+- Bidirectional links between agent ports
+- Each port can only connect to one other port
+- Connections store references to both agents and their ports
+- Connections form "active pairs" when connecting two main ports
+- Active pairs potentially trigger interaction rules
+
+### Rule System
+
+#### Action Rules
+- Execute a function when two specific agent types interact
+- Can read and modify agent values
+- Can return new agents/connections to add to the network
+- Stateless transformation functions
+
+#### Rewrite Rules
+- Replace connected agents with new network structures
+- Includes optimizations for static vs. dynamic rewrites
+- Caches rewrite plans for specific agent values
+- Follow formal interaction net semantics
+
+### Network Implementation
+- Manages all agents and their interactions
+- Key operations:
+  - `addAgent`: Add an agent to the network
+  - `connectPorts`: Create a connection between ports
+  - `addRule`: Register interaction rules
+  - `step()`: Apply a single reduction step
+  - `reduce()`: Repeatedly apply rules until fixed point
+- Optimizations:
+  - `TypeRegistry` assigns numeric IDs to agent types for faster matching
+  - `OptimizedGraph` structure for efficient agent/connection lookup
+  - Caches rule resolution results
+  - Optimized batch processing of reductions
+
+## Performance Features
+- Batch processing of reductions
+- Integer-based type matching
+- Efficient graph structure using optimized maps
+- Rule resolution caching
+- Rewrite plan memoization
+
+## Key UI Goals and Implementation Status
+
+### Reactivity / Change Tracking
+- **Current**: State changes via direct mutation of agent `value`
+- **Current**: Optional `TrackedAction` wrapper for change history recording
+- **Planned**: Automatic dependency tracking through connected agents
+
+### CRDT-like Behavior / Conflict Resolution
+- **Current**: Basic support through careful rule design
+- **Planned**: Built-in CRDT semantics in Updater rules
+
+### Algebraic Effects
+- **Current**: Basic support through Action rules
+- **Planned**: First-class effect handlers via specialized agents
+
+### Cross-Server Synchronization
+- **Current**: Not yet implemented
+- **Planned**: Serializable agents and connections
+- **Planned**: Sync ports for network boundaries
+
+### Rollback & Time Travel
+- **Current**: Basic change history tracking
+- **Planned**: Full snapshot system for time travel
+
+## Use Cases
+- Reactive programming primitives
+- State management for UI applications
+- Event-driven systems
+- Graph-based computation
+- Rule-based transformations
+
+## Example Usage
+
+```typescript
+// Create a network
+const network = Network();
+
+// Create counter and incrementer agents
+const counter = Agent("counter", { count: 0 });
+const incrementer = Agent("incrementer", { by: 1 });
+
+// Connect them via their main ports
+network.connectPorts(counter.ports.main, incrementer.ports.main);
+
+// Define an action rule
+network.addRule(ActionRule(
+  "counter", "main",
+  "incrementer", "main",
+  (counter, incrementer) => {
+    // Update counter state
+    counter.value.count += incrementer.value.by;
+    return [counter, incrementer];
+  }
+));
+
+// Apply the rule
+network.reduce();
+
+// Counter is now incremented
+console.log(counter.value.count); // 1
+```
+
+## Challenges & Considerations
+- Rule design correctness and completeness
+- Performance optimization for large nets
+- Memory management for history
+- Distributed identity and synchronization
+- Effect handling semantics
+
+## Future Directions
+- Automatic dependency tracking
+- Built-in CRDT operations
+- First-class algebraic effects
+- Cross-server synchronization
+- Time travel debugging
+- Type-safe rule matching
+- Automated visual debugging tools
+
+## Final Vision
+A UI library foundation where reactivity, effects, and distribution aren't afterthoughts but are intrinsically handled by the core computational model. The system aims to be:
+- Fundamentally sound (based on mathematical formalism)
+- Predictably consistent (deterministic rules and confluence)
+- Naturally collaborative (designed for distributed state)
+- Expressively powerful (unified modeling of complex flows)
+
+The elegance lies in achieving sophisticated capabilities through simple, powerful, and local graph rewriting rather than layers of complexity.

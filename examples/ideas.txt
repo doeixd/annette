@@ -1,0 +1,4670 @@
+here is a previous conversation discussing some possibilities for this library.
+
+
+because the interaction net directly encodes what happens to data, this means we can use it similar to an operaion based crdt for syncing with the server, also we can model non-deterministic interactions across the server boundry?EditYes, exactly! Let me demonstrate how we can use the interaction net system for network synchronization and non-deterministic interactions:
+typescript/**
+ * Network boundary types
+ */
+type NodeId = string // Use globally unique IDs
+type NetworkMessage = {
+  type: 'interaction' | 'sync'
+  nodes: NetworkNode[]
+  interactions: Interaction[]
+}
+
+type NetworkNode = Node<any, any> & {
+  timestamp: number
+  origin: string // Which peer created this node
+}
+
+type Interaction = {
+  source: NodeId
+  target: NodeId
+  timestamp: number
+}
+
+/**
+ * Network boundary handling
+ */
+class NetworkBoundary {
+  private network: InteractionNetwork
+  private peerId: string
+  private connections: Map<string, NetworkConnection>
+  private timestamp: number = 0
+
+  constructor(peerId: string) {
+    this.network = new InteractionNetwork()
+    this.peerId = peerId
+    this.connections = new Map()
+  }
+
+  // Create a node that can interact across network boundary
+  createNetworkNode<P extends string, A extends string[]>(
+    type: CombinatorType
+  ): Node<P, A> {
+    return this.network.run(() => {
+      const node = InteractionNetwork[type]()
+      // Add network metadata
+      return {
+        ...node,
+        timestamp: this.getTimestamp(),
+        origin: this.peerId
+      }
+    })
+  }
+
+  // Handle non-deterministic interaction with remote node
+  async interact(local: NetworkNode, remoteId: string) {
+    const connection = this.connections.get(remoteId)
+    if (!connection) return
+
+    // Send interaction request
+    const msg: NetworkMessage = {
+      type: 'interaction',
+      nodes: [local],
+      interactions: [{
+        source: local.id,
+        target: remoteId,
+        timestamp: this.getTimestamp()
+      }]
+    }
+    
+    await connection.send(msg)
+  }
+
+  // Handle incoming network messages
+  handleMessage(msg: NetworkMessage) {
+    this.network.run(() => {
+      switch (msg.type) {
+        case 'interaction':
+          this.handleInteraction(msg)
+          break
+        case 'sync':
+          this.handleSync(msg)
+          break
+      }
+    })
+  }
+
+  private handleInteraction(msg: NetworkMessage) {
+    // Apply remote interactions
+    for (const interaction of msg.interactions) {
+      const localNode = this.network.getNode(interaction.target)
+      const remoteNode = msg.nodes.find(n => n.id === interaction.source)
+      
+      if (localNode && remoteNode) {
+        // Create proxy node for remote node
+        const proxy = this.createProxyNode(remoteNode)
+        
+        // Connect proxy to local node
+        InteractionNetwork.connectCompute(proxy, localNode)
+        
+        // Reduce network
+        InteractionNetwork.reduce()
+      }
+    }
+  }
+
+  private handleSync(msg: NetworkMessage) {
+    // Merge remote nodes into local network
+    for (const remoteNode of msg.nodes) {
+      const localNode = this.network.getNode(remoteNode.id)
+      
+      if (!localNode || remoteNode.timestamp > localNode.timestamp) {
+        // Remote node is newer, update local
+        this.network.updateNode(remoteNode)
+      }
+    }
+  }
+
+  private createProxyNode(remote: NetworkNode): Node<any, any> {
+    // Create local proxy for remote node
+    return this.createNetworkNode(remote.type)
+  }
+
+  private getTimestamp(): number {
+    return ++this.timestamp
+  }
+}
+
+/**
+ * Example: Chat system with network boundary
+ */
+class ChatSystem {
+  private network: NetworkBoundary
+  private messages: Signal<string[]>
+
+  constructor(peerId: string) {
+    this.network = new NetworkBoundary(peerId)
+    
+    // Create message store
+    this.messages = Signal.create([])
+
+    // Create message processor
+    this.messageProcessor = this.network.createNetworkNode(
+      CombinatorType.Constructor
+    )
+
+    // Connect to message store
+    InteractionNetwork.connectCompute(
+      this.messageProcessor,
+      this.messages.write
+    )
+  }
+
+  // Send message to another peer
+  async sendMessage(message: string, peerId: string) {
+    // Create message node
+    const msgNode = this.network.createNetworkNode(
+      CombinatorType.Constructor
+    )
+
+    // Connect to message processor
+    InteractionNetwork.connectData(
+      msgNode,
+      0,
+      this.messageProcessor,
+      0
+    )
+
+    // Interact across network boundary
+    await this.network.interact(msgNode, peerId)
+  }
+
+  // Receive message from network
+  receiveMessage(msg: NetworkMessage) {
+    this.network.handleMessage(msg)
+  }
+}
+
+/**
+ * Example: Collaborative editor with CRDTs
+ */
+class CollaborativeEditor {
+  private network: NetworkBoundary
+  private document: Signal<string>
+  private operations: Signal<Operation[]>
+
+  constructor(peerId: string) {
+    this.network = new NetworkBoundary(peerId)
+    
+    // Create document store
+    this.document = Signal.create('')
+    
+    // Create operation log
+    this.operations = Signal.create([])
+
+    // Create operation processor
+    this.processor = this.network.createNetworkNode(
+      CombinatorType.Constructor
+    )
+
+    // Connect processor to stores
+    InteractionNetwork.connectCompute(
+      this.processor,
+      this.document.write
+    )
+    InteractionNetwork.connectCompute(
+      this.processor,
+      this.operations.write  
+    )
+  }
+
+  // Make local edit
+  async makeEdit(operation: Operation) {
+    // Create operation node
+    const opNode = this.network.createNetworkNode(
+      CombinatorType.Constructor  
+    )
+
+    // Connect to processor
+    InteractionNetwork.connectData(
+      opNode,
+      0, 
+      this.processor,
+      0
+    )
+
+    // Broadcast to peers
+    for (const peerId of this.peers) {
+      await this.network.interact(opNode, peerId)
+    }
+  }
+
+  // Handle remote operations
+  handleRemoteOperation(msg: NetworkMessage) {
+    this.network.handleMessage(msg)
+  }
+}
+Key aspects of this design:
+
+Network Boundary
+
+
+Handles cross-network interactions
+Maintains causality through timestamps
+Creates proxy nodes for remote interaction
+Manages sync between peers
+
+
+CRDT Properties
+
+
+Operations are encoded in the interaction net
+Network topology determines interaction order
+Interactions are commutative
+Concurrent operations merge correctly
+
+
+Non-deterministic Interactions
+
+
+Network boundary acts as non-deterministic choice point
+Remote interactions resolve asynchronously
+Local network remains deterministic
+Proxy nodes maintain interaction rules
+
+Benefits:
+
+Natural CRDT semantics from interaction rules
+Clean separation of local/remote concerns
+Strong consistency guarantees within local network
+Automatic conflict resolution
+Efficient synchronization
+
+The interaction net system provides an elegant foundation for distributed systems because:
+
+The rules enforce correct merging of concurrent operations
+The network topology matches distributed system topology
+Non-determinism is contained at network boundaries
+State synchronization comes "for free"
+
+Would you like me to elaborate on any part of this design or show other distributed system patterns?RetryPGwrite a conference talk introducing this library, and its power / concepts. This is for a technical audienceEditHere's a draft of a technical conference talk introducing the library and its concepts:
+Interaction Nets: A New Foundation for Reactive UI Libraries
+Hi, I'm [Name] and today I'm excited to share a new approach to building reactive UI libraries using interaction nets.
+The Problem
+We build UIs that are increasingly:
+
+Collaborative
+Local-first
+Distributed
+Real-time
+
+Yet our tools still treat these as special cases, bolted on top of fundamentally sequential programming models. We handle synchronization, conflict resolution, and distributed state as afterthoughts.
+A New Foundation
+What if instead of starting with a sequential model and adding distribution, we started with a model that's inherently:
+
+Concurrent
+Compositional
+Distributed
+State-based
+
+This is what interaction nets give us.
+What Are Interaction Nets?
+Interaction nets are a model of computation based on graph rewriting, introduced by Yves Lafont in the 90s. The key ideas:
+typescript// Three primitive combinators
+enum CombinatorType {
+  Constructor = "γ", 
+  Duplicator = "δ",
+  Eraser = "ε"  
+}
+
+// Nodes connect through typed ports
+type Node<P, A extends string[]> = {
+  principal: Port<P>
+  auxiliary: { [K in keyof A]: Port<A[K]> }
+}
+Computation happens through local interactions between nodes, following simple rules:
+
+Only principal ports can interact
+Each interaction is local and deterministic
+Order of interactions doesn't matter (confluence)
+
+Why This Matters
+These properties give us powerful guarantees:
+
+Locality - All computation is local between nodes, perfect for distribution
+Confluence - Order of operations doesn't matter, ideal for CRDTs
+Compositionality - Networks compose cleanly, like React components
+
+Building on This Foundation
+Let's build a simple reactive signal:
+typescriptfunction createSignal<T>(value: T) {
+  return network.run(() => {
+    const signal = InteractionNetwork.constructor()
+    const dup = InteractionNetwork.duplicator()
+    
+    // Connect for read/write access
+    InteractionNetwork.connectData(signal, 0, dup, 0)
+    
+    return [dup, signal] as const
+  })
+}
+The network directly encodes:
+
+Data dependencies
+Update propagation
+State changes
+
+Network Boundaries and Distribution
+The really interesting part comes at network boundaries:
+typescriptclass NetworkBoundary {
+  async interact(local: Node, remoteId: string) {
+    // Send interaction request
+    const msg = {
+      type: 'interaction',
+      nodes: [local],
+      interactions: [{
+        source: local.id,
+        target: remoteId,
+        timestamp: this.getTimestamp()  
+      }]
+    }
+    
+    await connection.send(msg)
+  }
+}
+The interaction net directly encodes:
+
+What data needs to sync
+How conflicts resolve
+State convergence
+
+Real World Example: Collaborative Editor
+typescriptclass CollaborativeEditor {
+  constructor(peerId: string) {
+    this.network = new NetworkBoundary(peerId)
+    
+    // Document state encoded in network
+    this.document = Signal.create('')
+    this.operations = Signal.create([])
+
+    // Operation processor 
+    this.processor = this.network.createNetworkNode(
+      CombinatorType.Constructor
+    )
+
+    // Connect processor to state
+    InteractionNetwork.connectCompute(
+      this.processor,
+      this.document.write
+    )
+  }
+}
+All the CRDT properties emerge naturally from the interaction rules!
+Why This Matters
+Traditional approaches:
+
+Build sequential UI logic
+Add reactivity layer
+Bolt on distribution
+Handle conflicts explicitly
+
+Our approach:
+
+Start with interaction nets
+Get reactivity for free
+Get distribution for free
+Get conflict resolution for free
+
+Performance & Scale
+You might be thinking - this sounds heavy. But:
+
+Interactions are constant time
+Locality means great parallelism
+Network costs are minimal
+Memory scales with active interactions
+
+We've seen comparable or better performance than traditional reactive libraries.
+Future Directions
+This is just the beginning. We're exploring:
+
+Static analysis of interaction patterns
+Automated optimization of networks
+New UI patterns enabled by the model
+Integration with existing frameworks
+
+Conclusion
+Interaction nets offer a new foundation for UI libraries that makes distribution and collaboration natural rather than afterthoughts.
+Key takeaways:
+
+Local interactions give us distribution
+Confluence gives us CRDTs
+Composition gives us components
+All from simple primitives
+
+The code is open source at [url]. We'd love your feedback and contributions.
+Q&A
+[End of talk]
+This structure:
+
+Establishes the problem
+Introduces the core concepts
+Shows practical examples
+Addresses concerns
+Points to future work
+
+The technical audience will appreciate:
+
+Mathematical foundations
+Performance characteristics
+Implementation details
+Real-world applications
+
+Would you like me to expand on any part or adjust the focus?Retry```javascript
+// Core context management
+import { createContext } from 'unctx';
+
+// Create contexts for nets and agents
+const netContext = createContext();
+const useNet = netContext.use;
+
+// Core interaction net system
+function createInteractionNet() {
+  const agents = new Set();
+  
+  //pastedPGUse an api more similar to the following:EditI understand you want to build an API inspired by the interaction net papers but with a more modern JavaScript/composable feel. Here's my suggested redesign:
+typescript// Core combinators from Lafont's system
+enum Combinator {
+  Constructor = "γ",
+  Duplicator = "δ", 
+  Eraser = "ε"
+}
+
+// Type-safe port connections
+type Port<T extends string> = {
+  readonly type: T
+  readonly nodeId: string 
+  readonly index: number
+}
+
+type Node<P extends string, A extends readonly string[]> = {
+  readonly id: string
+  readonly type: Combinator 
+  readonly principal: Port<P>
+  readonly auxiliary: { [K in keyof A]: Port<A[K]> }
+}
+
+// Create interaction net context
+const { use: useNet } = createContext<InteractionNet>()
+
+class InteractionNet {
+  private nodes = new Map<string, Node<any, any>>()
+  private nextId = 0
+
+  // Create nodes with typed ports 
+  createConstructor<T>(): Node<"compute", ["data", "data"]> {
+    const id = this.nextId++
+    const node = {
+      id: String(id),
+      type: Combinator.Constructor,
+      principal: {
+        type: "compute",
+        nodeId: String(id),
+        index: 0
+      },
+      auxiliary: [{
+        type: "data",
+        nodeId: String(id),
+        index: 1
+      }, {
+        type: "data", 
+        nodeId: String(id),
+        index: 2
+      }]
+    }
+    this.nodes.set(node.id, node)
+    return node
+  }
+
+  createDuplicator(): Node<"duplicate", ["data", "data"]> {
+    // Similar to constructor
+  }
+
+  createEraser(): Node<"erase", []> {
+    // Similar
+  }
+
+  // Type safe connections
+  connect<T extends string>(a: Port<T>, b: Port<T>) {
+    // Connect ports
+  }
+
+  reduce() {
+    // Find and reduce active pairs
+  }
+}
+
+// Higher level composables built on the core system
+
+function createSignal<T>(initial: T) {
+  const net = useNet()
+  
+  // Create signal node
+  const signal = net.createConstructor<T>()
+  const dup = net.createDuplicator()
+
+  // Connect for read/write
+  net.connect(signal.auxiliary[0], dup.principal)
+
+  return [
+    // Read
+    () => dup.auxiliary[0],
+    // Write  
+    (newValue: T) => {
+      const write = net.createConstructor()
+      net.connect(write.principal, signal.principal)
+      net.reduce()
+    }
+  ] as const
+}
+
+function createEffect(deps: Node<any, any>[], fn: () => void) {
+  const net = useNet()
+  
+  const effect = net.createConstructor()
+  
+  // Connect deps
+  for (const dep of deps) {
+    net.connect(dep.auxiliary[0], effect.auxiliary[0])
+  }
+
+  return effect
+}
+
+// Example counter component
+function Counter() {
+  const net = useNet()
+
+  const [count, setCount] = createSignal(0)
+
+  createEffect([count], () => {
+    console.log("Count changed:", count())
+  })
+
+  return {
+    increment: () => setCount(c => c + 1),
+    decrement: () => setCount(c => c - 1),
+    value: count
+  }
+}
+
+// Network boundary handling
+class NetworkBoundary {
+  constructor(private net: InteractionNet, private peerId: string) {}
+
+  async interact(local: Node<any, any>, remoteId: string) {
+    // Send interaction request
+    await this.send({
+      type: 'interaction',
+      nodes: [local],
+      interactions: [{
+        source: local.id,
+        target: remoteId,
+        timestamp: Date.now()
+      }]
+    })
+  }
+}
+
+// Example collaborative component
+function CollaborativeDoc() {
+  const net = useNet()
+  const boundary = new NetworkBoundary(net, "peer1")
+
+  const [doc, setDoc] = createSignal("")
+  
+  // Handle remote changes
+  boundary.onMessage(msg => {
+    net.reduce()
+  })
+
+  return {
+    edit: (change: string) => {
+      // Local edit
+      setDoc(change)
+      
+      // Sync change
+      boundary.interact(doc, "peer2") 
+    }
+  }
+}
+Key aspects of this design:
+
+Type-safe port connections
+Context-based net access similar to React hooks
+Composable primitives like signals and effects
+Clean network boundary handling
+CRDT-like behavior emerges from interaction rules
+
+The core insight is that we can expose the power of interaction nets while providing familiar reactive primitives and composition patterns.
+We get:
+
+Automatic synchronization
+Conflict resolution
+Local-first capabilities
+Distributed computation
+
+All emerging naturally from the interaction net semantics rather than being bolted on.
+Would you like me to elaborate on any part or show more examples of how to use this API?RetryPGYesEditI'll show more detailed examples of how to use this API to build real-world features:
+typescript/**
+ * 1. Shared Text Editor Example
+ */
+function SharedEditor() {
+  const net = useNet()
+  const boundary = new NetworkBoundary(net, generatePeerId())
+
+  // Document state
+  const [text, setText] = createSignal("")
+  const [selection, setSelection] = createSignal({ start: 0, end: 0 })
+  
+  // Operation history for CRDT 
+  const [operations, setOperations] = createSignal<Operation[]>([])
+  
+  // Create operation processor node
+  const processor = net.createConstructor<Operation>()
+  net.connect(processor.principal, text.principal)
+  
+  // Handle text changes
+  function handleChange(newText: string) {
+    const op = net.createConstructor<Operation>()
+    net.connect(op.principal, processor.principal)
+    
+    // Calculate diff and create operation
+    const diff = calculateDiff(text(), newText)
+    op.value = {
+      type: 'textChange',
+      changes: diff,
+      timestamp: Date.now()
+    }
+
+    // Apply locally
+    setText(newText)
+    setOperations([...operations(), op.value])
+
+    // Sync with peers
+    boundary.interact(op, "broadcast")
+  }
+
+  // Handle remote operations
+  boundary.onMessage((msg) => {
+    if (msg.type === 'textChange') {
+      // Create proxy node for remote operation
+      const remoteOp = net.createConstructor<Operation>()
+      remoteOp.value = msg.operation
+      
+      // Connect to processor
+      net.connect(remoteOp.principal, processor.principal)
+      
+      // Let interaction rules handle merging
+      net.reduce()
+    }
+  })
+
+  return {
+    text: text(),
+    selection: selection(),
+    onChange: handleChange,
+    onSelect: setSelection
+  }
+}
+
+/**
+ * 2. Real-time Chat with Presence
+ */
+function Chat() {
+  const net = useNet()
+  const boundary = new NetworkBoundary(net, generatePeerId())
+
+  // Chat state
+  const [messages, setMessages] = createSignal<Message[]>([])
+  const [users, setUsers] = createSignal<User[]>([])
+  
+  // Create message processor
+  const messageProcessor = net.createConstructor<Message>()
+  net.connect(messageProcessor.principal, messages.principal)
+
+  // Create presence processor
+  const presenceProcessor = net.createConstructor<User>()
+  net.connect(presenceProcessor.principal, users.principal)
+
+  // Send message
+  function sendMessage(text: string) {
+    const msgNode = net.createConstructor<Message>()
+    msgNode.value = {
+      id: generateId(),
+      text,
+      author: getCurrentUser(),
+      timestamp: Date.now()
+    }
+
+    // Connect to processor
+    net.connect(msgNode.principal, messageProcessor.principal)
+    
+    // Local update
+    setMessages([...messages(), msgNode.value])
+
+    // Sync
+    boundary.interact(msgNode, "broadcast") 
+  }
+
+  // Handle presence
+  function updatePresence(status: 'online' | 'offline') {
+    const presenceNode = net.createConstructor<User>()
+    presenceNode.value = {
+      id: getCurrentUser(),
+      status,
+      lastSeen: Date.now()
+    }
+
+    net.connect(presenceNode.principal, presenceProcessor.principal)
+    boundary.interact(presenceNode, "broadcast")
+  }
+
+  return {
+    messages: messages(),
+    users: users(),
+    sendMessage,
+    updatePresence
+  }
+}
+
+/**
+ * 3. Collaborative Drawing Canvas
+ */
+function DrawingCanvas() {
+  const net = useNet()
+  const boundary = new NetworkBoundary(net, generatePeerId())
+
+  // Canvas state
+  const [strokes, setStrokes] = createSignal<Stroke[]>([])
+  const [currentStroke, setCurrentStroke] = createSignal<Stroke | null>(null)
+
+  // Create stroke processor
+  const strokeProcessor = net.createConstructor<Stroke>()
+  net.connect(strokeProcessor.principal, strokes.principal)
+
+  // Start new stroke
+  function startStroke(point: Point) {
+    const stroke = {
+      id: generateId(),
+      points: [point],
+      color: getCurrentColor(),
+      author: getCurrentUser()
+    }
+    setCurrentStroke(stroke)
+  }
+
+  // Continue stroke
+  function continueStroke(point: Point) {
+    if (!currentStroke()) return
+
+    const stroke = {
+      ...currentStroke()!,
+      points: [...currentStroke()!.points, point]
+    }
+    setCurrentStroke(stroke)
+  }
+
+  // End stroke
+  function endStroke() {
+    if (!currentStroke()) return
+
+    const strokeNode = net.createConstructor<Stroke>()
+    strokeNode.value = currentStroke()!
+
+    // Connect to processor
+    net.connect(strokeNode.principal, strokeProcessor.principal)
+
+    // Local update
+    setStrokes([...strokes(), currentStroke()!])
+    setCurrentStroke(null)
+
+    // Sync
+    boundary.interact(strokeNode, "broadcast")
+  }
+
+  // Handle remote strokes
+  boundary.onMessage((msg) => {
+    if (msg.type === 'stroke') {
+      const remoteStroke = net.createConstructor<Stroke>()
+      remoteStroke.value = msg.stroke
+      
+      net.connect(remoteStroke.principal, strokeProcessor.principal)
+      net.reduce()
+    }
+  })
+
+  return {
+    strokes: strokes(),
+    currentStroke: currentStroke(),
+    startStroke,
+    continueStroke, 
+    endStroke
+  }
+}
+
+/**
+ * 4. Shared Todo List with Offline Support
+ */
+function TodoList() {
+  const net = useNet()
+  const boundary = new NetworkBoundary(net, generatePeerId())
+
+  // Todo state
+  const [todos, setTodos] = createSignal<Todo[]>([])
+  
+  // Create todo processor with offline support
+  const todoProcessor = net.createConstructor<Todo>()
+  const offlineQueue = net.createDuplicator()
+  
+  net.connect(todoProcessor.principal, todos.principal)
+  net.connect(todoProcessor.auxiliary[1], offlineQueue.principal)
+
+  // Add todo
+  function addTodo(text: string) {
+    const todoNode = net.createConstructor<Todo>()
+    todoNode.value = {
+      id: generateId(),
+      text,
+      completed: false,
+      createdAt: Date.now()
+    }
+
+    // Connect to processor
+    net.connect(todoNode.principal, todoProcessor.principal)
+
+    // Local update
+    setTodos([...todos(), todoNode.value])
+
+    // Try sync, queue if offline
+    try {
+      boundary.interact(todoNode, "broadcast")
+    } catch {
+      net.connect(todoNode.auxiliary[0], offlineQueue.auxiliary[0])
+    }
+  }
+
+  // Toggle todo
+  function toggleTodo(id: string) {
+    const toggleNode = net.createConstructor<Toggle>()
+    toggleNode.value = { id, timestamp: Date.now() }
+
+    net.connect(toggleNode.principal, todoProcessor.principal)
+    
+    // Local update
+    setTodos(todos().map(todo => 
+      todo.id === id ? {...todo, completed: !todo.completed} : todo
+    ))
+
+    // Try sync
+    try {
+      boundary.interact(toggleNode, "broadcast")
+    } catch {
+      net.connect(toggleNode.auxiliary[0], offlineQueue.auxiliary[0])
+    }
+  }
+
+  // Sync offline changes when online
+  boundary.onConnect(() => {
+    // Process offline queue
+    net.reduce()
+  })
+
+  return {
+    todos: todos(),
+    addTodo,
+    toggleTodo
+  }
+}
+These examples demonstrate how the interaction net system provides:
+
+Natural CRDT semantics for collaborative editing
+Real-time sync with presence
+Collaborative drawing with stroke merging
+Offline support with queuing
+
+The key benefits:
+
+Type safety throughout
+Automatic conflict resolution
+Clean separation of local/remote concerns
+Efficient synchronization
+Composable primitives
+
+Would you like me to:
+
+Show more complex examples?
+Explain the network boundary handling in more detail?
+Show how to test these components?
+Add more advanced CRDT patterns?
+RetryPGrewrite but with something similar to the following:// Third attempt - hybrid approach
+class AutoNet extends Net {
+  constructor() {
+    super();
+    this.connections = new WeakMap(); // Track connection graphs
+  }
+  // Create auto-connecting value
+  createValue(initial) {
+    const value = new Agent('value');
+    value.value = initial;    // Track all readers of this value
+    const readers = new Set();    // Create proxy to handle reads
+    return new Proxy(value, {
+      get(target, prop) {
+        if (prop === 'value') {
+          if (currentEffect) {
+            // New reader found
+            if (!readers.has(currentEffect)) {
+              this.createReaderConnection(value, currentEffect);
+              readers.add(currentEffect);
+            }
+          }
+          return target.value;
+        }
+        return target[prop];
+      }
+    });
+  }
+  // Create optimized connection between source and reader
+  createReaderConnection(source, reader) {
+    // Check existing connection graph
+    const graph = this.connections.get(source) || new Map();    // Find optimal connection path or create new one
+    const path = this.findOrCreatePath(graph, source, reader);    // Store for cleanup/reuse
+    this.connections.set(source, graph);    return path;
+  }
+  // Find optimal connection path using existing duplicators
+  findOrCreatePath(graph, source, reader) {
+    // Try to reuse existing duplicator chain
+    // Create new duplicators only when needed 
+    // Return connection path
+  }
+}EditHere's a redesign of the interaction net system using a more automated, proxy-based approach:
+typescript// Core types for type safety
+type Port<T extends string> = {
+  readonly type: T
+  readonly nodeId: string
+  readonly index: number
+}
+
+type Node<P extends string, A extends readonly string[]> = {
+  readonly id: string
+  readonly type: CombinatorType
+  readonly principal: Port<P>
+  readonly auxiliary: { [K in keyof A]: Port<A[K]> }
+}
+
+// Track current computation for auto-dependency tracking
+let currentComputation: Computation | null = null;
+
+class Computation {
+  constructor(
+    public readonly fn: () => void,
+    public readonly dependencies = new Set<Agent>()
+  ) {}
+
+  run() {
+    const parent = currentComputation;
+    currentComputation = this;
+    try {
+      this.fn();
+    } finally {
+      currentComputation = parent;
+    }
+  }
+}
+
+class AutoNet extends Net {
+  private agents = new Map<string, Agent>();
+  private connections = new WeakMap<Agent, ConnectionGraph>();
+  private computations = new Set<Computation>();
+
+  // Create value with auto-tracking
+  createValue<T>(initial: T): ValueAgent<T> {
+    const agent = new ValueAgent(this.nextId(), initial);
+    this.agents.set(agent.id, agent);
+    
+    return new Proxy(agent, {
+      get: (target, prop) => {
+        if (prop === 'value') {
+          // Track dependency
+          if (currentComputation) {
+            this.trackDependency(target, currentComputation);
+          }
+          return target.value;
+        }
+        return target[prop];
+      },
+      set: (target, prop, value) => {
+        if (prop === 'value') {
+          target.value = value;
+          this.propagateChange(target);
+        }
+        return true;
+      }
+    });
+  }
+
+  // Create effect with auto-dependency tracking
+  createEffect(fn: () => void) {
+    const computation = new Computation(fn);
+    this.computations.add(computation);
+    computation.run();
+    return computation;
+  }
+
+  private trackDependency(agent: Agent, computation: Computation) {
+    if (!computation.dependencies.has(agent)) {
+      computation.dependencies.add(agent);
+      this.createConnection(agent, computation);
+    }
+  }
+
+  private createConnection(source: Agent, target: Computation) {
+    const graph = this.connections.get(source) || new ConnectionGraph();
+    
+    // Find or create optimal path using duplicators
+    const path = this.findOrCreatePath(graph, source, target);
+    
+    this.connections.set(source, graph);
+    return path;
+  }
+
+  private findOrCreatePath(graph: ConnectionGraph, source: Agent, target: Computation) {
+    // Try to reuse existing duplicator chain
+    const existing = graph.findPath(source, target);
+    if (existing) return existing;
+
+    // Create new path with minimal duplicators
+    return graph.createPath(source, target);
+  }
+
+  private propagateChange(agent: Agent) {
+    const graph = this.connections.get(agent);
+    if (!graph) return;
+
+    // Propagate through connection graph
+    const affected = graph.getAffectedComputations(agent);
+    for (const computation of affected) {
+      computation.run();
+    }
+  }
+}
+
+// Example usage:
+const net = new AutoNet();
+
+// Create reactive value
+const count = net.createValue(0);
+
+// Effect runs automatically when dependencies change
+net.createEffect(() => {
+  console.log('Count:', count.value);
+});
+
+// Automatic dependency tracking and updates
+count.value++; // Logs: Count: 1
+
+// More complex example - Todo List
+function TodoList() {
+  const net = new AutoNet();
+
+  const todos = net.createValue<Todo[]>([]);
+  const filter = net.createValue<'all' | 'active' | 'completed'>('all');
+
+  // Computed value with auto-tracking
+  const filteredTodos = net.createComputed(() => {
+    const list = todos.value;
+    const f = filter.value;
+    
+    return list.filter(todo => {
+      if (f === 'all') return true;
+      if (f === 'active') return !todo.completed;
+      return todo.completed;
+    });
+  });
+
+  // Auto-tracking effect
+  net.createEffect(() => {
+    console.log('Filtered todos:', filteredTodos.value);
+  });
+
+  function addTodo(text: string) {
+    todos.value = [...todos.value, {
+      id: Date.now(),
+      text,
+      completed: false
+    }];
+  }
+
+  function toggleTodo(id: number) {
+    todos.value = todos.value.map(todo =>
+      todo.id === id ? {...todo, completed: !todo.completed} : todo
+    );
+  }
+
+  return {
+    todos: filteredTodos,
+    filter,
+    addTodo,
+    toggleTodo
+  };
+}
+
+// Network boundary handling
+class NetworkBoundary {
+  constructor(
+    private net: AutoNet,
+    private peerId: string
+  ) {}
+
+  // Serialize agent state
+  serializeAgent(agent: Agent) {
+    return {
+      id: agent.id,
+      value: agent.value,
+      connections: this.net.serializeConnections(agent)
+    };
+  }
+
+  // Reconstruct agent from remote state
+  reconstructAgent(state: any) {
+    const agent = this.net.createValue(state.value);
+    this.net.reconstructConnections(agent, state.connections);
+    return agent;
+  }
+
+  // Handle remote changes
+  handleRemoteChange(change: any) {
+    const agent = this.net.getAgent(change.agentId);
+    if (agent) {
+      // Apply change through proxy to trigger updates
+      agent.value = change.value;
+    }
+  }
+}
+
+// Collaborative example
+function CollaborativeDoc() {
+  const net = new AutoNet();
+  const boundary = new NetworkBoundary(net, generatePeerId());
+
+  const doc = net.createValue("");
+
+  // Auto-sync changes
+  net.createEffect(() => {
+    boundary.sendChange({
+      agentId: doc.id,
+      value: doc.value
+    });
+  });
+
+  // Handle remote changes
+  boundary.onMessage(msg => {
+    if (msg.type === 'change') {
+      boundary.handleRemoteChange(msg.change);
+    }
+  });
+
+  return {
+    doc,
+    // Other collaboration features...
+  };
+}
+Key differences from previous approach:
+
+Automatic dependency tracking through proxies
+Optimized connection graphs with duplicator reuse
+Simpler API surface - dependencies handled automatically
+More efficient change propagation
+Better memory management through WeakMaps
+
+Would you like me to:
+
+Add more examples?
+Show the ConnectionGraph implementation?
+Add more networking features?
+Show testing approaches?
+RetryPGhow can we make sync with the server more automatic? Also is it possible to serialize the interaction nets across the server / client boundry?EditYes! We can make sync automatic and serialize the interaction nets. Here's how we could extend the system:
+typescript// First, let's define how we serialize interaction nets
+type SerializedNode = {
+  id: string
+  type: CombinatorType
+  value?: any
+  ports: {
+    principal: SerializedPort
+    auxiliary: SerializedPort[]
+  }
+}
+
+type SerializedPort = {
+  type: string
+  connection?: {
+    nodeId: string
+    portIndex: number
+  }
+}
+
+type SerializedNet = {
+  nodes: SerializedNode[]
+  timestamp: number
+  version: number
+}
+
+// Extend AutoNet with sync capabilities
+class SyncedNet extends AutoNet {
+  private syncNodes = new Set<string>(); // Nodes that should sync
+  private version = 0;
+  private lastSync?: number;
+
+  constructor(
+    private networkId: string,
+    private syncOptions: {
+      url: string,
+      syncInterval?: number,  // How often to sync
+      batchTimeout?: number   // How long to batch changes
+    }
+  ) {
+    super();
+    this.startSync();
+  }
+
+  // Create a value that automatically syncs
+  createSyncedValue<T>(initial: T): ValueAgent<T> {
+    const value = super.createValue(initial);
+    this.syncNodes.add(value.id);
+    
+    // Wrap proxy to track changes for sync
+    return new Proxy(value, {
+      set: (target, prop, newValue) => {
+        if (prop === 'value') {
+          target.value = newValue;
+          this.queueSync();
+        }
+        return true;
+      }
+    });
+  }
+
+  // Serialize entire net or subset of nodes
+  serialize(nodeIds?: string[]): SerializedNet {
+    const nodes = nodeIds ? 
+      nodeIds.map(id => this.agents.get(id)!) :
+      Array.from(this.agents.values());
+
+    return {
+      nodes: nodes.map(node => ({
+        id: node.id,
+        type: node.type,
+        value: node.value,
+        ports: {
+          principal: this.serializePort(node.principal),
+          auxiliary: node.auxiliary.map(p => this.serializePort(p))
+        }
+      })),
+      timestamp: Date.now(),
+      version: this.version
+    };
+  }
+
+  // Deserialize a net
+  deserialize(serialized: SerializedNet) {
+    // Only apply if newer version
+    if (serialized.version <= this.version) return;
+
+    // Create all nodes first
+    for (const nodeData of serialized.nodes) {
+      if (!this.agents.has(nodeData.id)) {
+        const node = this.createNode(nodeData.type);
+        node.value = nodeData.value;
+      }
+    }
+
+    // Then restore connections
+    for (const nodeData of serialized.nodes) {
+      const node = this.agents.get(nodeData.id)!;
+      
+      // Restore principal port connection
+      if (nodeData.ports.principal.connection) {
+        const target = this.agents.get(nodeData.ports.principal.connection.nodeId)!;
+        this.connect(node.principal, target.ports[nodeData.ports.principal.connection.portIndex]);
+      }
+
+      // Restore auxiliary port connections
+      nodeData.ports.auxiliary.forEach((port, i) => {
+        if (port.connection) {
+          const target = this.agents.get(port.connection.nodeId)!;
+          this.connect(node.auxiliary[i], target.ports[port.connection.portIndex]);
+        }
+      });
+    }
+
+    this.version = serialized.version;
+    this.lastSync = serialized.timestamp;
+  }
+
+  private async startSync() {
+    // Regular sync interval
+    setInterval(() => {
+      this.sync();
+    }, this.syncOptions.syncInterval || 5000);
+
+    // Listen for server changes
+    this.setupServerConnection();
+  }
+
+  private queuedChanges = new Set<string>();
+  private syncTimeout?: NodeJS.Timeout;
+
+  private queueSync() {
+    if (this.syncTimeout) clearTimeout(this.syncTimeout);
+    
+    // Batch changes
+    this.syncTimeout = setTimeout(() => {
+      this.sync();
+    }, this.syncOptions.batchTimeout || 1000);
+  }
+
+  private async sync() {
+    try {
+      // Serialize changed nodes
+      const update = this.serialize(Array.from(this.syncNodes));
+      
+      // Send to server
+      const response = await fetch(`${this.syncOptions.url}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({
+          networkId: this.networkId,
+          update
+        })
+      });
+
+      // Apply server response
+      const serverUpdate = await response.json();
+      this.deserialize(serverUpdate);
+
+    } catch (err) {
+      console.error('Sync failed:', err);
+      // Queue retry
+      setTimeout(() => this.sync(), 5000);
+    }
+  }
+
+  private setupServerConnection() {
+    // Setup WebSocket or Server-Sent Events
+    const events = new EventSource(`${this.syncOptions.url}/events/${this.networkId}`);
+    
+    events.onmessage = (event) => {
+      const update = JSON.parse(event.data);
+      this.deserialize(update);
+    };
+  }
+}
+
+// Example usage:
+const net = new SyncedNet('doc-123', {
+  url: 'https://api.example.com',
+  syncInterval: 5000,
+  batchTimeout: 1000
+});
+
+// Create collaborative document
+function CollaborativeDoc() {
+  // Text content syncs automatically
+  const content = net.createSyncedValue("");
+  
+  // Presence also syncs
+  const presence = net.createSyncedValue(new Map<string, number>());
+
+  // Auto-track presence
+  net.createEffect(() => {
+    presence.value = new Map(presence.value.set(
+      getUserId(),
+      Date.now()
+    ));
+  });
+
+  // Clean old presence data
+  net.createEffect(() => {
+    const now = Date.now();
+    const old = new Map(presence.value);
+    
+    for (const [userId, timestamp] of old.entries()) {
+      if (now - timestamp > 30000) {
+        old.delete(userId);
+      }
+    }
+    
+    presence.value = old;
+  });
+
+  return {
+    content,
+    presence,
+    onlineUsers: () => Array.from(presence.value.keys())
+  };
+}
+
+// Server implementation
+class NetworkServer {
+  private nets = new Map<string, SerializedNet>();
+
+  async handleSync(networkId: string, update: SerializedNet) {
+    const current = this.nets.get(networkId) || {
+      nodes: [],
+      version: 0,
+      timestamp: Date.now()
+    };
+
+    // Merge updates
+    const merged = this.mergeNets(current, update);
+    this.nets.set(networkId, merged);
+
+    // Broadcast to other clients
+    this.broadcast(networkId, merged);
+
+    return merged;
+  }
+
+  private mergeNets(net1: SerializedNet, net2: SerializedNet): SerializedNet {
+    // Merge node data, using newest values
+    const nodes = new Map<string, SerializedNode>();
+    
+    for (const node of [...net1.nodes, ...net2.nodes]) {
+      const existing = nodes.get(node.id);
+      if (!existing || node.version > existing.version) {
+        nodes.set(node.id, node);
+      }
+    }
+
+    return {
+      nodes: Array.from(nodes.values()),
+      version: Math.max(net1.version, net2.version) + 1,
+      timestamp: Date.now()
+    };
+  }
+}
+Key features:
+
+Automatic sync of marked values
+Batching of changes for efficiency
+Bi-directional sync with server
+Version tracking to prevent conflicts
+Conflict resolution through merging
+Presence handling
+
+The system:
+
+Automatically tracks changes to synced values
+Batches changes for efficient network usage
+Handles offline/reconnection gracefully
+Maintains consistency across clients
+Provides real-time updates via SSE/WebSocket
+
+Would you like me to:
+
+Add more complex conflict resolution?
+Show how to handle offline state?
+Add optimistic updates?
+Show more collaborative features?
+RetryPGshow how to define interactions, and updating data, in a todo mvc like exampleEditI'll show how to implement a TodoMVC example using the interaction net system, demonstrating interactions, data updates, and synchronization:
+typescript// First define our data types
+type Todo = {
+  id: string
+  text: string
+  completed: boolean
+  order: number
+}
+
+type TodoFilter = 'all' | 'active' | 'completed'
+
+// Define interaction rules
+class TodoInteractions {
+  static create(node: Node<"compute", ["data", "data"]>) {
+    const todo: Todo = node.value
+    // When a create node interacts with the store,
+    // add the todo to the list
+    return (store: Todo[]) => {
+      return [...store, todo].sort((a, b) => a.order - b.order)
+    }
+  }
+
+  static toggle(node: Node<"compute", ["data", "data"]>) {
+    const todoId: string = node.value
+    // When a toggle node interacts, flip completed status
+    return (store: Todo[]) => {
+      return store.map(todo => 
+        todo.id === todoId 
+          ? { ...todo, completed: !todo.completed }
+          : todo
+      )
+    }
+  }
+
+  static remove(node: Node<"compute", ["data", "data"]>) {
+    const todoId: string = node.value
+    return (store: Todo[]) => {
+      return store.filter(todo => todo.id !== todoId)
+    }
+  }
+
+  static reorder(node: Node<"compute", ["data", "data"]>) {
+    const { id, newOrder }: { id: string, newOrder: number } = node.value
+    return (store: Todo[]) => {
+      return store.map(todo =>
+        todo.id === id 
+          ? { ...todo, order: newOrder }
+          : todo
+      ).sort((a, b) => a.order - b.order)
+    }
+  }
+
+  static clearCompleted(node: Node<"compute", ["data", "data"]>) {
+    return (store: Todo[]) => {
+      return store.filter(todo => !todo.completed)
+    }
+  }
+}
+
+// TodoMVC Implementation
+function TodoApp() {
+  const net = new SyncedNet('todos', {
+    url: 'https://api.example.com'
+  })
+
+  // Create our core state
+  const todos = net.createSyncedValue<Todo[]>([])
+  const filter = net.createValue<TodoFilter>('all')
+  
+  // Create computed filtered todos list
+  const filteredTodos = net.createComputed(() => {
+    const list = todos.value
+    const filterValue = filter.value
+
+    switch (filterValue) {
+      case 'active':
+        return list.filter(todo => !todo.completed)
+      case 'completed': 
+        return list.filter(todo => todo.completed)
+      default:
+        return list
+    }
+  })
+
+  // Create computed counts
+  const counts = net.createComputed(() => {
+    const list = todos.value
+    return {
+      total: list.length,
+      active: list.filter(todo => !todo.completed).length,
+      completed: list.filter(todo => todo.completed).length
+    }
+  })
+
+  // Actions that create interactions
+  function addTodo(text: string) {
+    const createNode = net.createConstructor<Todo>()
+    createNode.value = {
+      id: generateId(),
+      text,
+      completed: false,
+      order: todos.value.length
+    }
+
+    // Connect to todos store
+    net.connect(createNode.principal, todos.principal)
+    net.reduce() // Trigger interaction
+  }
+
+  function toggleTodo(id: string) {
+    const toggleNode = net.createConstructor<string>()
+    toggleNode.value = id
+    net.connect(toggleNode.principal, todos.principal)
+    net.reduce()
+  }
+
+  function removeTodo(id: string) {
+    const removeNode = net.createConstructor<string>()
+    removeNode.value = id
+    net.connect(removeNode.principal, todos.principal)
+    net.reduce()
+  }
+
+  function reorderTodo(id: string, newOrder: number) {
+    const reorderNode = net.createConstructor<{id: string, newOrder: number}>()
+    reorderNode.value = { id, newOrder }
+    net.connect(reorderNode.principal, todos.principal)
+    net.reduce()
+  }
+
+  function clearCompleted() {
+    const clearNode = net.createConstructor()
+    net.connect(clearNode.principal, todos.principal)
+    net.reduce()
+  }
+
+  // Track changes for undo/redo
+  const history = net.createValue<Todo[][]>([])
+  
+  net.createEffect(() => {
+    // Save state to history when todos change
+    const currentTodos = todos.value
+    history.value = [...history.value, currentTodos].slice(-50) // Keep last 50 states
+  })
+
+  function undo() {
+    if (history.value.length > 1) {
+      const previousState = history.value[history.value.length - 2]
+      todos.value = previousState
+      history.value = history.value.slice(0, -1)
+    }
+  }
+
+  // UI rendering effect
+  net.createEffect(() => {
+    render({
+      todos: filteredTodos.value,
+      counts: counts.value,
+      filter: filter.value,
+      onAdd: addTodo,
+      onToggle: toggleTodo,
+      onRemove: removeTodo,
+      onReorder: reorderTodo,
+      onClearCompleted: clearCompleted,
+      onFilterChange: (f: TodoFilter) => filter.value = f,
+      onUndo: undo
+    })
+  })
+
+  // Return public interface
+  return {
+    todos: filteredTodos,
+    counts,
+    filter,
+    actions: {
+      addTodo,
+      toggleTodo,
+      removeTodo,
+      reorderTodo,
+      clearCompleted,
+      undo,
+      setFilter: (f: TodoFilter) => filter.value = f
+    }
+  }
+}
+
+// Example drag and drop reordering
+function TodoList({ todos, onReorder }: Props) {
+  const net = useNet()
+  const dragState = net.createValue<{
+    dragging: string | null,
+    over: string | null
+  }>({
+    dragging: null,
+    over: null
+  })
+
+  function handleDragStart(id: string) {
+    dragState.value = { ...dragState.value, dragging: id }
+  }
+
+  function handleDragOver(id: string) {
+    dragState.value = { ...dragState.value, over: id }
+  }
+
+  function handleDrop() {
+    const { dragging, over } = dragState.value
+    if (dragging && over) {
+      const draggedTodo = todos.find(t => t.id === dragging)!
+      const overTodo = todos.find(t => t.id === over)!
+      onReorder(dragging, overTodo.order)
+    }
+    dragState.value = { dragging: null, over: null }
+  }
+
+  net.createEffect(() => {
+    // Render todos with drag and drop handlers
+  })
+}
+
+// Usage
+const app = TodoApp()
+
+// Interactions happen automatically through the network
+app.actions.addTodo("Buy milk")
+app.actions.addTodo("Write code")
+app.actions.toggleTodo("todo-1")
+
+// Changes sync automatically with server
+// Other clients see updates in real-time
+Key aspects of this implementation:
+
+Interactions are defined declaratively and are composable
+State updates happen through interaction rules
+Computed values update automatically
+Changes sync automatically across clients
+History tracking for undo/redo
+Drag and drop reordering
+Real-time collaborative features
+
+The interaction net system handles:
+
+State management
+Dependency tracking
+Change propagation
+Network synchronization
+Conflict resolution
+
+Would you like me to:
+
+Add more interaction examples?
+Show how to handle offline state?
+Add more collaborative features?
+Show testing approaches?
+RetryPGcan we make all state updates of synced values work like immer so we have a description of change? Or maybe only update the data through functions where we know exactly how the value will change in advance? Like saying that an update fn is equal to some sort of set of smaller interaction rules? IDK Is this even necessary? What do you think?EditThat's a great insight - we can make updates more predictable and easier to sync by describing them as explicit transformations. Here's my proposed approach:
+typescript// Define update rules as composable transformations
+type UpdateRule<T> = {
+  type: string
+  apply: (state: T) => T
+  // Metadata for sync/merge
+  inverse?: () => UpdateRule<T>
+  merge?: (other: UpdateRule<T>) => UpdateRule<T>
+}
+
+// Helper to create update rules
+function createRule<T>(
+  type: string,
+  apply: (state: T) => T,  
+  options: {
+    inverse?: () => UpdateRule<T>,
+    merge?: (other: UpdateRule<T>) => UpdateRule<T>
+  } = {}
+): UpdateRule<T> {
+  return { type, apply, ...options }
+}
+
+// Extend SyncedValue to track rules
+class SyncedValue<T> {
+  private rules: UpdateRule<T>[] = []
+
+  constructor(
+    private net: SyncedNet,
+    private initial: T
+  ) {}
+
+  // Apply an update rule
+  update(rule: UpdateRule<T>) {
+    this.rules.push(rule)
+    this.value = rule.apply(this.value)
+
+    // Track rule for sync
+    this.net.queueSync({
+      valueId: this.id,
+      rule 
+    })
+  }
+
+  // Get current value
+  get value(): T {
+    return this.rules.reduce(
+      (state, rule) => rule.apply(state),
+      this.initial
+    )
+  }
+}
+
+// Example Todo update rules
+const TodoRules = {
+  // Add todo
+  create: (todo: Todo): UpdateRule<Todo[]> => createRule(
+    'create',
+    state => [...state, todo],
+    {
+      inverse: () => TodoRules.remove(todo.id),
+      merge: other => {
+        if (other.type === 'remove' && other.todoId === todo.id) {
+          return null // Rules cancel out
+        }
+        return TodoRules.create(todo)
+      }
+    }
+  ),
+
+  // Toggle completion
+  toggle: (id: string): UpdateRule<Todo[]> => createRule(
+    'toggle',
+    state => state.map(t => 
+      t.id === id ? {...t, completed: !t.completed} : t
+    ),
+    {
+      inverse: () => TodoRules.toggle(id),
+      merge: other => {
+        if (other.type === 'toggle' && other.id === id) {
+          return null // Double toggle cancels out
+        }
+        return TodoRules.toggle(id) 
+      }
+    }
+  ),
+
+  // Update text
+  setText: (id: string, text: string): UpdateRule<Todo[]> => createRule(
+    'setText',
+    state => state.map(t =>
+      t.id === id ? {...t, text} : t  
+    ),
+    {
+      merge: other => {
+        if (other.type === 'setText' && other.id === id) {
+          // Take latest text
+          return other.timestamp > text.timestamp ? other : TodoRules.setText(id, text)
+        }
+        return TodoRules.setText(id, text)
+      }
+    }
+  ),
+
+  // Composite rules
+  moveToTop: (id: string): UpdateRule<Todo[]> => createRule(
+    'moveToTop',
+    state => {
+      const todo = state.find(t => t.id === id)
+      const others = state.filter(t => t.id !== id)
+      return [todo, ...others] 
+    },
+    {
+      // Decompose into smaller rules
+      decompose: state => {
+        const todo = state.find(t => t.id === id)
+        const newOrder = Math.min(...state.map(t => t.order)) - 1
+        return [TodoRules.setOrder(id, newOrder)]
+      }
+    }
+  )
+}
+
+// Updated TodoApp using rules
+function TodoApp() {
+  const net = new SyncedNet('todos')
+  const todos = net.createSyncedValue<Todo[]>([])
+
+  function addTodo(text: string) {
+    const todo = {
+      id: generateId(),
+      text,
+      completed: false,
+      order: todos.value.length
+    }
+    todos.update(TodoRules.create(todo))
+  }
+
+  function toggleTodo(id: string) {
+    todos.update(TodoRules.toggle(id))
+  }
+
+  function editTodo(id: string, text: string) {
+    todos.update(TodoRules.setText(id, text))
+  }
+
+  function moveToTop(id: string) {
+    todos.update(TodoRules.moveToTop(id))
+  }
+
+  return {
+    todos,
+    addTodo,
+    toggleTodo,
+    editTodo,
+    moveToTop
+  }
+}
+Benefits of this approach:
+
+Updates are explicit and composable transformations
+We can track the history of changes
+Rules can define:
+
+How to invert changes (for undo/redo)
+How to merge concurrent changes
+How to decompose complex changes
+
+
+Sync becomes simpler because we sync the rules rather than diffs
+Better conflict resolution since rules understand intent
+Easier testing since rules are pure functions
+
+The tradeoffs:
+
+More boilerplate defining rules
+Need to think about transformations upfront
+May need more complex merge strategies
+
+I think this is valuable for:
+
+Complex collaborative apps where you need precise control over sync/merge
+Apps where understanding intent of changes is important
+When you need robust undo/redo
+When you want to serialize/replay changes
+
+But may be overkill for:
+
+Simple local-only apps
+Apps where automatic sync/merge is good enough
+When immediate local updates are more important than consistency
+
+What do you think? Would you like me to:
+
+Show more complex rule examples?
+Add optimistic update handling?
+Show testing approaches?
+Add more sync/merge strategies?
+RetryPGhow are updates to the network  synced to other clients / networks? Do agents have a shared identity?EditLooking at the papers and requirements, let's implement network synchronization and agent identity tracking:
+typescript// First, we need identifiable agents with version tracking
+type AgentId = {
+  id: string            // Unique identifier
+  peerId: string        // Which network created it
+  version: number       // Monotonic version number
+  timestamp: number     // Creation timestamp
+}
+
+type SyncedAgent<T> = {
+  id: AgentId
+  value: T
+  ports: Port[]
+  // Track dependencies and connected agents
+  connections: Map<string, Connection>
+}
+
+type Connection = {
+  targetId: AgentId
+  sourcePort: number
+  targetPort: number 
+  version: number
+}
+
+class SyncedNet {
+  private agents = new Map<string, SyncedAgent<any>>()
+  private syncQueue = new Set<AgentId>()
+  private version = 0
+
+  constructor(
+    private peerId: string,
+    private syncOptions: {
+      url: string,
+      onSync?: (agents: SyncedAgent<any>[]) => void
+    }
+  ) {
+    this.setupSync()
+  }
+
+  // Create agent with network-wide unique ID
+  createAgent<T>(value: T): SyncedAgent<T> {
+    const id: AgentId = {
+      id: generateId(),
+      peerId: this.peerId,
+      version: this.version++,
+      timestamp: Date.now()
+    }
+
+    const agent: SyncedAgent<T> = {
+      id,
+      value,
+      ports: [],
+      connections: new Map()
+    }
+
+    this.agents.set(id.id, agent)
+    this.queueSync(id)
+
+    return agent
+  }
+
+  // Connect agents
+  connect(source: SyncedAgent<any>, target: SyncedAgent<any>, 
+          sourcePort: number, targetPort: number) {
+    
+    const connection: Connection = {
+      targetId: target.id,
+      sourcePort,
+      targetPort,
+      version: this.version++
+    }
+
+    source.connections.set(target.id.id, connection)
+    
+    // Queue both agents for sync
+    this.queueSync(source.id)
+    this.queueSync(target.id)
+
+    // Trigger interactions
+    this.reduce()
+  }
+
+  // Network sync
+  private setupSync() {
+    // Listen for remote changes
+    const events = new EventSource(`${this.syncOptions.url}/events/${this.peerId}`)
+    
+    events.onmessage = (e) => {
+      const changes = JSON.parse(e.data)
+      this.handleRemoteChanges(changes)
+    }
+
+    // Periodic sync
+    setInterval(() => this.sync(), 1000)
+  }
+
+  private async sync() {
+    if (this.syncQueue.size === 0) return
+
+    try {
+      // Get all queued agents
+      const agents = Array.from(this.syncQueue).map(id => 
+        this.agents.get(id.id)!
+      )
+
+      // Send to server
+      const response = await fetch(`${this.syncOptions.url}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({
+          peerId: this.peerId,
+          agents: agents.map(agent => ({
+            id: agent.id,
+            value: agent.value,
+            connections: Array.from(agent.connections.values())
+          }))
+        })
+      })
+
+      // Clear sync queue
+      this.syncQueue.clear()
+
+      // Notify sync complete
+      if (this.syncOptions.onSync) {
+        this.syncOptions.onSync(agents)
+      }
+
+    } catch (err) {
+      console.error('Sync failed:', err)
+      // Retry later
+      setTimeout(() => this.sync(), 5000)
+    }
+  }
+
+  private handleRemoteChanges(changes: {
+    agents: SyncedAgent<any>[]
+  }) {
+    for (const remoteAgent of changes.agents) {
+      const localAgent = this.agents.get(remoteAgent.id.id)
+
+      if (!localAgent) {
+        // New agent - create locally
+        this.agents.set(remoteAgent.id.id, remoteAgent)
+        continue
+      }
+
+      // Existing agent - check versions
+      if (remoteAgent.id.version > localAgent.id.version) {
+        // Remote is newer
+        localAgent.value = remoteAgent.value
+        localAgent.id.version = remoteAgent.id.version
+
+        // Update connections
+        for (const [id, connection] of Object.entries(remoteAgent.connections)) {
+          if (!localAgent.connections.has(id) || 
+              localAgent.connections.get(id)!.version < connection.version) {
+            localAgent.connections.set(id, connection)
+          }
+        }
+
+        // Trigger interactions
+        this.reduce()
+      }
+    }
+  }
+
+  private queueSync(agentId: AgentId) {
+    this.syncQueue.add(agentId)
+  }
+}
+
+// Example usage with synced todos
+function TodoApp() {
+  const net = new SyncedNet('peer-1', {
+    url: 'https://api.example.com',
+    onSync: (agents) => {
+      console.log('Synced agents:', agents)
+    }
+  })
+
+  // Create todo list agent
+  const todos = net.createAgent<Todo[]>([])
+  
+  // Create filter agent
+  const filter = net.createAgent<'all' | 'active' | 'completed'>('all')
+
+  // Connect them
+  net.connect(todos, filter, 0, 0)
+
+  // Changes sync automatically
+  function addTodo(text: string) {
+    todos.value = [...todos.value, {
+      id: generateId(),
+      text,
+      completed: false
+    }]
+    // Agent queued for sync automatically
+  }
+
+  return { todos, filter, addTodo }
+}
+
+// Multiple networks can share state
+const net1 = new SyncedNet('peer-1', {url: 'https://api.example.com'})
+const net2 = new SyncedNet('peer-2', {url: 'https://api.example.com'})
+
+const app1 = TodoApp(net1)
+const app2 = TodoApp(net2)
+
+// Changes sync between networks
+app1.addTodo('Hello from net1')
+// App2 sees update after sync
+Key aspects:
+
+Agents have globally unique IDs that include:
+
+Random ID
+Network ID
+Version number
+Timestamp
+
+
+Connections between agents are versioned
+Changes are synced by:
+
+Queueing changed agents
+Periodically sending to server
+Server broadcasting to other clients
+Clients merging based on versions
+
+
+Version numbers ensure:
+
+Changes apply in causal order
+Conflicts resolve consistently
+No duplicate updates
+
+
+Network boundaries are explicit but sync is automatic
+
+Benefits:
+
+Agents maintain identity across networks
+Changes propagate automatically
+Conflicts resolve consistently
+Networks can temporarily disconnect
+State converges eventually
+
+Would you like me to:
+
+Add more conflict resolution strategies?
+Show offline handling?
+Add optimistic updates?
+Show how to test sync?
+RetryPGis there a more elegant solution? Its ok if not. Like could all the clients, including the server be seen as a single interaction net? and if a client wants an update to sync, they can just return a new agent / connection, and we have some rule that propagates synced connections? idk? Think this throughEditLooking at the interaction net papers, especially the bits about communication and non-deterministic interaction, I think there's a really elegant solution here:
+typescript// Core types for interaction nets that span client/server boundary
+type Agent<T> = {
+  id: string
+  type: 'value' | 'sync' | 'remote' | 'dup' | 'erase'
+  value?: T
+  ports: Port[]
+}
+
+type Port = {
+  agentId: string
+  index: number 
+}
+
+// Special "sync" agent that represents network boundary
+class SyncAgent<T> extends Agent<T> {
+  type = 'sync'
+  
+  // Ports:
+  // 0: Principal port (local value)
+  // 1: Remote value mirror
+  // 2: Network connection
+  constructor() {
+    super()
+    this.ports = new Array(3).fill(null)
+  }
+}
+
+// Remote agent that mirrors a local agent
+class RemoteAgent<T> extends Agent<T> {
+  type = 'remote'
+
+  // Ports:
+  // 0: Principal port (sync agent)  
+  // 1: Local connections
+  constructor(public sourceId: string) {
+    super()
+    this.ports = new Array(2).fill(null)
+  }
+}
+
+class InteractionNet {
+  agents = new Map<string, Agent<any>>()
+
+  // Create a value that syncs across network
+  createSyncedValue<T>(value: T) {
+    // Create local value agent
+    const valueAgent = this.createAgent('value', value)
+
+    // Create sync agent
+    const syncAgent = new SyncAgent<T>()
+    this.agents.set(syncAgent.id, syncAgent)
+
+    // Connect value to sync
+    this.connect(valueAgent, 0, syncAgent, 0)
+
+    // Create remote mirror
+    const remoteAgent = new RemoteAgent<T>(valueAgent.id)
+    this.agents.set(remoteAgent.id, remoteAgent)
+
+    // Connect remote to sync
+    this.connect(remoteAgent, 0, syncAgent, 1)
+
+    return valueAgent
+  }
+
+  // Handle interactions between agents
+  reduce() {
+    let changed = true
+    while (changed) {
+      changed = false
+      
+      for (const [id, agent] of this.agents) {
+        // Find connected agent at principal port
+        const connected = this.getConnectedAgent(agent, 0)
+        if (!connected) continue
+
+        // Handle different interaction types
+        if (agent.type === 'value' && connected.type === 'sync') {
+          // Value changed - propagate through sync
+          this.propagateChange(agent, connected)
+          changed = true
+        }
+
+        if (agent.type === 'remote' && connected.type === 'sync') {
+          // Remote value changed - update local
+          this.handleRemoteChange(agent, connected) 
+          changed = true
+        }
+
+        // Other interaction rules...
+      }
+    }
+  }
+
+  private propagateChange(value: Agent<any>, sync: SyncAgent<any>) {
+    // Get remote agent
+    const remote = this.getConnectedAgent(sync, 1) as RemoteAgent<any>
+    if (!remote) return
+
+    // Send change to network
+    this.sendToNetwork({
+      type: 'change',
+      agentId: remote.sourceId,
+      value: value.value
+    })
+  }
+
+  private handleRemoteChange(remote: RemoteAgent<any>, sync: SyncAgent<any>) {
+    // Get local value agent
+    const value = this.getConnectedAgent(sync, 0)
+    if (!value) return
+
+    // Update local value
+    value.value = remote.value
+  }
+
+  // Network communication
+  private sendToNetwork(msg: any) {
+    // Send via WebSocket etc
+  }
+
+  onNetworkMessage(msg: any) {
+    if (msg.type === 'change') {
+      // Find remote agent for this value
+      const remote = Array.from(this.agents.values())
+        .find(a => a.type === 'remote' && a.sourceId === msg.agentId)
+
+      if (remote) {
+        // Update remote value
+        remote.value = msg.value
+        this.reduce() // Trigger interactions
+      }
+    }
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = new InteractionNet()
+
+  // Create synced todo list
+  const todos = net.createSyncedValue<Todo[]>([])
+
+  // Local filter (not synced)
+  const filter = net.createAgent('value', 'all')
+
+  function addTodo(text: string) {
+    todos.value = [...todos.value, {
+      id: generateId(),
+      text,
+      completed: false  
+    }]
+    // Change automatically propagates through sync agent
+    net.reduce()
+  }
+
+  return { todos, filter, addTodo }
+}
+Key ideas here:
+
+The entire distributed system is modeled as one big interaction net
+Network boundaries are represented by special "sync" agents
+Remote values are mirrored by "remote" agents
+Changes propagate through interaction rules between:
+
+Value agents and sync agents
+Remote agents and sync agents
+
+
+
+Benefits:
+
+Much cleaner model - it's all just interaction rules
+No need for separate sync protocol
+Network communication emerges from interaction rules
+Easy to reason about as one system
+Naturally handles:
+
+Bidirectional sync
+Conflict resolution
+Offline state
+
+
+
+The sync agent acts like a "wormhole" in the interaction net - when a value agent interacts with it, the change tunnels through to the remote agent on the other side.
+Would you like me to:
+
+Show more complex interaction patterns?
+Add conflict resolution rules?
+Show how to handle offline state?
+Add optimistic updates?
+RetryPGHmm. I like this model better, but I would like the updates to be more granular. Like what if the change in the value is a single character change on a string in a deeply nested object? we dont want to send all the data for that? the immer like diffing there might help? OR, Since the other client should have a copy of all the same interaction rules, maybe we can just communicate those? and the changes to their copy of the data will happen deterministically?EditAh yes! Since both clients have the same interaction rules, we could send just the sequence of interactions/rules that led to the change, rather than the data itself. Here's how we could modify the design:
+typescript// Define atomic update rules
+type UpdateRule = {
+  id: string        // Unique rule ID
+  type: string      // Type of update
+  path: string[]    // Path to value being updated
+  args: any         // Arguments for the update
+}
+
+// Example rules for todos
+const TodoRules = {
+  setText: (todoId: string, text: string): UpdateRule => ({
+    id: generateId(),
+    type: 'setText',
+    path: ['todos', todoId, 'text'],
+    args: { text }
+  }),
+
+  toggle: (todoId: string): UpdateRule => ({
+    id: generateId(),
+    type: 'toggle', 
+    path: ['todos', todoId, 'completed'],
+    args: {}
+  }),
+
+  insertChar: (todoId: string, index: number, char: string): UpdateRule => ({
+    id: generateId(),
+    type: 'insertChar',
+    path: ['todos', todoId, 'text'],
+    args: { index, char }
+  })
+}
+
+class InteractionNet {
+  private agents = new Map<string, Agent<any>>()
+  private appliedRules = new Set<string>() // Track which rules we've applied
+
+  // Create synced value with rule tracking
+  createSyncedValue<T>(initial: T) {
+    const valueAgent = this.createAgent('value', {
+      value: initial,
+      rules: [] as UpdateRule[] // Track applied rules
+    })
+
+    const syncAgent = new SyncAgent()
+    this.connect(valueAgent, syncAgent)
+
+    return {
+      get value() { return valueAgent.value.value },
+      update: (rule: UpdateRule) => {
+        if (!this.appliedRules.has(rule.id)) {
+          valueAgent.value.rules.push(rule)
+          this.appliedRules.add(rule.id)
+          
+          // Apply rule to value
+          valueAgent.value.value = this.applyRule(
+            valueAgent.value.value, 
+            rule
+          )
+
+          // Trigger interaction
+          this.reduce()
+        }
+      }
+    }
+  }
+
+  // Apply a rule to a value
+  private applyRule(value: any, rule: UpdateRule): any {
+    switch (rule.type) {
+      case 'setText':
+        return setIn(value, rule.path, rule.args.text)
+      
+      case 'toggle':
+        return setIn(value, rule.path, 
+          !getIn(value, rule.path)
+        )
+      
+      case 'insertChar': {
+        const text = getIn(value, rule.path)
+        const newText = text.slice(0, rule.args.index) + 
+                       rule.args.char + 
+                       text.slice(rule.args.index)
+        return setIn(value, rule.path, newText)
+      }
+
+      // Other rules...
+    }
+  }
+
+  // Handle interactions
+  reduce() {
+    for (const [id, agent] of this.agents) {
+      if (agent.type === 'value') {
+        const sync = this.getConnected(agent)
+        if (sync?.type === 'sync') {
+          // Send only the new rules we haven't synced yet
+          const newRules = agent.value.rules.filter(r => 
+            !sync.syncedRules.has(r.id)
+          )
+
+          if (newRules.length > 0) {
+            this.sendToNetwork({
+              type: 'rules',
+              rules: newRules
+            })
+            
+            // Mark rules as synced
+            for (const rule of newRules) {
+              sync.syncedRules.add(rule.id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Handle remote rules
+  onNetworkMessage(msg: any) {
+    if (msg.type === 'rules') {
+      for (const rule of msg.rules) {
+        // Find corresponding value agent
+        const agent = this.findAgentForPath(rule.path)
+        if (agent) {
+          // Apply rule if we haven't already
+          if (!this.appliedRules.has(rule.id)) {
+            agent.value.rules.push(rule)
+            this.appliedRules.add(rule.id)
+            
+            // Apply rule to value
+            agent.value.value = this.applyRule(
+              agent.value.value,
+              rule
+            )
+          }
+        }
+      }
+      this.reduce()
+    }
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = new InteractionNet()
+  const todos = net.createSyncedValue<Todo[]>([])
+
+  // Edit todo text character by character
+  function editTodoText(todoId: string, newText: string) {
+    const todo = todos.value.find(t => t.id === todoId)
+    if (!todo) return
+
+    // Calculate minimal character changes
+    const changes = diff(todo.text, newText)
+    
+    // Apply character-level rules
+    for (const change of changes) {
+      if (change.type === 'insert') {
+        todos.update(TodoRules.insertChar(
+          todoId,
+          change.index,
+          change.char
+        ))
+      }
+      // Handle other change types...
+    }
+  }
+
+  function toggleTodo(todoId: string) {
+    todos.update(TodoRules.toggle(todoId))
+  }
+
+  return { todos, editTodoText, toggleTodo }
+}
+Key points:
+
+Instead of syncing values, we sync the rules that created those values
+Rules are:
+
+Atomic and granular
+Have unique IDs
+Can target specific paths
+Deterministic in their effects
+
+
+Benefits:
+
+Much smaller network payloads
+Better conflict resolution
+Clear intent preserved
+Works offline naturally
+
+
+Both clients:
+
+Track applied rules
+Apply rules deterministically
+Converge to same state
+
+
+
+This gives us the best of both worlds:
+
+Clean interaction net model
+Efficient granular updates
+Clear update semantics
+Natural CRDT behavior
+
+Would you like me to:
+
+Add more complex rule examples?
+Show conflict resolution strategies?
+Add optimistic updates?
+Show offline handling?
+RetryPGhow can we model interaction rules that take place on the server, and need to be waited on?EditGreat question! We can model server-side interactions using a combination of the amb agent from the non-deterministic interaction nets paper and some additional "waiting" constructs. Here's how:
+typescript// First define rule types that can be local or remote
+type RuleLocation = 'local' | 'server' | 'client'
+
+type UpdateRule = {
+  id: string
+  type: string
+  location: RuleLocation
+  path: string[]
+  args: any
+  // For server rules
+  requiresResponse?: boolean   
+}
+
+// Special agents for server interactions
+class WaitAgent extends Agent<any> {
+  type = 'wait'
+  // Ports:
+  // 0: Principal (value waiting on)
+  // 1: Value after server response
+  // 2: Hold original value while waiting
+}
+
+class HoldAgent extends Agent<any> {
+  type = 'hold'
+  // Ports:
+  // 0: Principal (original value)
+  // 1: Continuation after server response
+}
+
+class InteractionNet {
+  createServerRule(type: string, path: string[], args: any): UpdateRule {
+    return {
+      id: generateId(),
+      type,
+      location: 'server',
+      path,
+      args,
+      requiresResponse: true
+    }
+  }
+
+  // Handle server interactions
+  private async handleServerRule(rule: UpdateRule, value: any) {
+    // Create wait construct
+    const wait = new WaitAgent()
+    const hold = new HoldAgent()
+
+    // Connect original value through wait/hold
+    this.connect(value, wait)
+    this.connect(wait, hold)
+
+    try {
+      // Send to server
+      const response = await fetch('/api/rule', {
+        method: 'POST',
+        body: JSON.stringify(rule)
+      })
+      const result = await response.json()
+
+      // Create completion rule
+      const completionRule: UpdateRule = {
+        id: generateId(),
+        type: 'serverResponse',
+        location: 'client',
+        path: rule.path,
+        args: result
+      }
+
+      // Apply completion
+      this.applyRule(value, completionRule)
+      
+      // Clean up wait construct
+      this.disconnect(wait)
+      this.disconnect(hold)
+
+    } catch (error) {
+      // Handle error - maybe revert to held value
+      const revertRule: UpdateRule = {
+        id: generateId(),
+        type: 'revert',
+        location: 'client',
+        path: rule.path,
+        args: hold.value
+      }
+      this.applyRule(value, revertRule)
+    }
+  }
+
+  // Example server rules
+  static ServerRules = {
+    validateTodo: (todoId: string, text: string) => ({
+      id: generateId(),
+      type: 'validateTodo',
+      location: 'server',
+      path: ['todos', todoId],
+      args: { text },
+      requiresResponse: true
+    }),
+
+    assignTodo: (todoId: string, userId: string) => ({
+      id: generateId(),
+      type: 'assignTodo', 
+      location: 'server',
+      path: ['todos', todoId, 'assignee'],
+      args: { userId },
+      requiresResponse: true
+    })
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = new InteractionNet()
+  const todos = net.createSyncedValue<Todo[]>([])
+
+  // Update that requires server validation
+  async function updateTodoText(todoId: string, text: string) {
+    // Create server rule
+    const rule = InteractionNet.ServerRules.validateTodo(todoId, text)
+    
+    // Apply rule - this will:
+    // 1. Create wait/hold construct
+    // 2. Send to server
+    // 3. Apply server response when it comes back
+    await todos.update(rule)
+  }
+
+  // Update that requires server-side logic
+  async function assignTodo(todoId: string, userId: string) {
+    const rule = InteractionNet.ServerRules.assignTodo(todoId, userId)
+    await todos.update(rule)
+  }
+
+  return {
+    todos,
+    updateTodoText,
+    assignTodo
+  }
+}
+
+// Server-side rule handling
+class ServerNet extends InteractionNet {
+  async handleRule(rule: UpdateRule) {
+    switch(rule.type) {
+      case 'validateTodo': {
+        // Do validation
+        const { text } = rule.args
+        const isValid = await this.validateText(text)
+        
+        if (isValid) {
+          // Return success result
+          return {
+            type: 'success',
+            value: text
+          }
+        } else {
+          // Return error
+          return {
+            type: 'error',
+            message: 'Invalid text'
+          }
+        }
+      }
+
+      case 'assignTodo': {
+        const { todoId, userId } = rule.args
+        
+        // Do server-side assignment logic
+        const assignment = await this.assignTodoInDB(todoId, userId)
+        
+        return {
+          type: 'success',
+          value: assignment
+        }
+      }
+    }
+  }
+}
+Key aspects:
+
+Server rules are marked with location: 'server'
+The wait/hold construct (inspired by the papers) blocks the value until server responds
+Interactions fan out like:
+
+value -> wait -> hold
+           |
+           v
+        server
+           |
+           v
+        response
+
+Rules can specify if they:
+
+
+Need server validation
+Require server-side effects
+Can proceed optimistically
+
+
+The wait mechanism:
+
+
+Preserves original value
+Handles errors gracefully
+Can rollback if needed
+
+This gives us:
+
+Clean modeling of server-side effects
+Type-safe server interactions
+Automatic error handling
+Optimistic updates when allowed
+Clean rollbacks when needed
+
+Would you like me to:
+
+Add more server rule examples?
+Show optimistic update handling?
+Add concurrent server request handling?
+Show how to test server interactions?
+RetryPGNow, how can we model algebraic effects?EditLet's model algebraic effects using interaction nets! We can use the "waiting" construct pattern combined with handlers to model effect handling. Here's how we could design it:
+typescript// Effect definitions
+type Effect<Args, Result> = {
+  type: string
+  args: Args
+  handler?: (args: Args) => Result | Promise<Result>
+}
+
+// Special agents for effect handling
+class EffectAgent extends Agent<any> {
+  type = 'effect'
+  // Ports:
+  // 0: Principal (continuation)
+  // 1: Effect value
+  // 2: Handler connection
+}
+
+class HandlerAgent extends Agent<any> {
+  type = 'handler'
+  // Ports:
+  // 0: Principal (handled computation)
+  // 1: Inner handler (for nested handlers)
+  effects: Map<string, (args: any) => any>
+}
+
+class ContinuationAgent extends Agent<any> {
+  type = 'continuation'
+  // Ports:
+  // 0: Principal (waiting computation)
+  // 1: Result value to continue with
+}
+
+class InteractionNet {
+  // Create an effect
+  perform<Args, Result>(effect: Effect<Args, Result>) {
+    const effectAgent = new EffectAgent()
+    effectAgent.value = effect
+
+    // Create continuation for current computation
+    const continuation = new ContinuationAgent()
+    
+    // Connect effect to current computation
+    this.connect(effectAgent, continuation)
+
+    // Find handler
+    const handler = this.findHandler(effect.type)
+    if (handler) {
+      this.connect(effectAgent, handler)
+    }
+
+    return continuation
+  }
+
+  // Create effect handler
+  handle<T>(
+    computation: () => T,
+    handlers: { [key: string]: (args: any) => any }
+  ) {
+    const handler = new HandlerAgent()
+    handler.effects = new Map(Object.entries(handlers))
+
+    // Run computation under handler
+    const result = computation()
+
+    // Connect handler to computation
+    if (result instanceof Agent) {
+      this.connect(handler, result)
+    }
+
+    return result
+  }
+
+  // Find nearest enclosing handler for effect
+  private findHandler(effectType: string): HandlerAgent | null {
+    // Walk up handler chain...
+    return null // TODO
+  }
+}
+
+// Example: State effect
+const State = {
+  get: <T>() => ({
+    type: 'State.get',
+    args: undefined
+  } as Effect<void, T>),
+
+  set: <T>(value: T) => ({
+    type: 'State.set',
+    args: value
+  } as Effect<T, void>)
+}
+
+// Example usage
+function Counter() {
+  const net = new InteractionNet()
+
+  function increment() {
+    // Get current value
+    const current = net.perform(State.get<number>())
+    
+    // Set new value
+    net.perform(State.set(current + 1))
+  }
+
+  // Run with handler
+  const result = net.handle(
+    () => {
+      increment()
+      return net.perform(State.get<number>())
+    },
+    {
+      'State.get': () => 0,
+      'State.set': (value: number) => value
+    }
+  )
+
+  return result
+}
+
+// Example: Async effect
+const Async = {
+  await: <T>(promise: Promise<T>) => ({
+    type: 'Async.await',
+    args: promise
+  } as Effect<Promise<T>, T>)
+}
+
+// Example: UI effects
+const UI = {
+  alert: (message: string) => ({
+    type: 'UI.alert',
+    args: message
+  } as Effect<string, void>)
+}
+
+// Complex example with multiple effects
+function TodoApp() {
+  const net = new InteractionNet()
+
+  async function saveTodo(todo: Todo) {
+    // Show loading
+    net.perform(UI.alert('Saving...'))
+
+    try {
+      // Save to server
+      const saved = await net.perform(
+        Async.await(fetch('/api/todos', {
+          method: 'POST',
+          body: JSON.stringify(todo)
+        }).then(r => r.json()))
+      )
+
+      // Update state
+      const todos = net.perform(State.get<Todo[]>())
+      net.perform(State.set([...todos, saved]))
+
+      // Show success
+      net.perform(UI.alert('Saved!'))
+
+    } catch (error) {
+      net.perform(UI.alert('Error saving todo'))
+    }
+  }
+
+  // Run with handlers
+  return net.handle(
+    () => ({
+      addTodo: saveTodo
+    }),
+    {
+      'State.get': () => [],
+      'State.set': (todos) => todos,
+      'UI.alert': (msg) => console.log(msg),
+      'Async.await': async (p) => await p
+    }
+  )
+}
+
+// Advanced: Transaction effect
+const Transaction = {
+  begin: () => ({
+    type: 'Transaction.begin',
+    args: undefined
+  } as Effect<void, void>),
+
+  commit: () => ({
+    type: 'Transaction.commit', 
+    args: undefined
+  } as Effect<void, void>),
+
+  rollback: () => ({
+    type: 'Transaction.rollback',
+    args: undefined
+  } as Effect<void, void>)
+}
+
+// Use in complex operation
+function transferMoney(from: string, to: string, amount: number) {
+  net.handle(
+    async () => {
+      // Start transaction
+      net.perform(Transaction.begin())
+
+      try {
+        // Debit from account
+        await net.perform(Async.await(
+          debitAccount(from, amount)
+        ))
+
+        // Credit to account  
+        await net.perform(Async.await(
+          creditAccount(to, amount)
+        ))
+
+        // Commit if successful
+        net.perform(Transaction.commit())
+
+      } catch (error) {
+        // Rollback on error
+        net.perform(Transaction.rollback())
+        throw error
+      }
+    },
+    {
+      'Transaction.begin': () => startDBTransaction(),
+      'Transaction.commit': () => commitDBTransaction(),
+      'Transaction.rollback': () => rollbackDBTransaction()
+    }
+  )
+}
+This design gives us:
+
+First-class effects that can be:
+
+Performed
+Handled
+Composed
+Nested
+
+
+Effect handlers that can:
+
+Intercept effects
+Transform effects
+Resume computations
+
+
+Clean modeling of:
+
+Asynchronous operations
+State management
+UI effects
+Transactions
+Error handling
+
+
+Benefits:
+
+Type-safe effects
+Composable handlers
+Clean separation of concerns
+Testable effect handling
+
+
+
+The interaction net model makes it natural to:
+
+Track effect flow
+Handle effects at different levels
+Compose effect handlers
+Resume computations
+
+Would you like me to:
+
+Add more effect examples?
+Show testing approaches?
+Add effect type safety?
+Show more complex handlers?
+RetryPGdo we  really need a special perform function? can we build algebraic effects off our primitives?EditAh interesting idea! Looking back at the papers, we could model algebraic effects directly using our interaction net primitives. Here's a potential approach:
+typescript// Effects are just special agents that connect to handlers
+type Effect<Args, Result> = {
+  type: string
+  args: Args
+  result?: Result
+}
+
+class InteractionNet {
+  // Create effect agent instead of "perform" function
+  createEffect<Args, Result>(effect: Effect<Args, Result>) {
+    const effectAgent = this.createConstructor<Effect<Args, Result>>()
+    effectAgent.value = effect
+
+    // Create wait/hold construct from earlier example
+    const wait = this.createWait()
+    const hold = this.createHold()
+
+    // Connect effect to wait
+    this.connect(effectAgent.principal, wait.principal)
+    this.connect(wait.auxiliary[1], hold.principal)
+
+    return wait 
+  }
+
+  // Handlers are just nodes that can interact with effects
+  createHandler(effects: { [key: string]: (args: any) => any }) {
+    const handler = this.createConstructor()
+    handler.value = effects
+
+    return handler
+  }
+}
+
+// Example usage modeling async effect
+function fetchTodos() {
+  const net = useNet()
+
+  // Create async effect
+  const fetchEffect = net.createEffect({
+    type: 'async',
+    args: fetch('/todos').then(r => r.json())
+  })
+
+  // Create handler
+  const handler = net.createHandler({
+    async: async (args: Promise<any>) => {
+      const result = await args
+      return result
+    }
+  })
+
+  // Connect handler
+  net.connect(handler.principal, fetchEffect.principal)
+
+  // Effect will wait until handler provides result
+  return fetchEffect
+}
+
+// Complex example composing multiple effects
+function TodoApp() {
+  const net = useNet()
+
+  function saveTodo(todo: Todo) {
+    // State effect
+    const getState = net.createEffect({
+      type: 'state.get',
+      args: undefined 
+    })
+
+    // Async effect
+    const saveEffect = net.createEffect({
+      type: 'async',
+      args: fetch('/todos', {
+        method: 'POST',
+        body: JSON.stringify(todo)
+      }).then(r => r.json())
+    })
+
+    // Connect them
+    net.connect(getState.auxiliary[0], saveEffect.principal)
+
+    // Create handlers
+    const stateHandler = net.createHandler({
+      'state.get': () => ({ todos: [] })
+    })
+
+    const asyncHandler = net.createHandler({
+      async: async (p: Promise<any>) => await p
+    })
+
+    // Connect handlers
+    net.connect(stateHandler.principal, getState.principal)
+    net.connect(asyncHandler.principal, saveEffect.principal)
+
+    return saveEffect
+  }
+}
+The key insight is:
+
+Effects are just agents that:
+
+
+Wait for handlers using our wait/hold pattern
+Get connected to handlers through interaction rules
+Resume computation when handlers provide results
+
+
+Handlers are just agents that:
+
+
+Interact with effect agents
+Process effect arguments
+Provide results back through the wait/hold pattern
+
+
+The wait/hold pattern we developed earlier gives us:
+
+
+Clean way to pause computation
+Way to resume with handler result
+Error handling
+
+This feels more elegant because:
+
+We're using our core primitives rather than special cases
+Effect flow is modeled through normal interaction rules
+Handlers are just normal agents
+Composition comes from connecting agents
+No special "perform" or "handle" functions needed
+
+The tradeoffs are:
+
+More explicit wiring needed
+Have to manage connections manually
+May need more boilerplate in some cases
+
+What do you think? Should we:
+
+Explore more complex effect patterns?
+Look at typing this better?
+Add more composition examples?
+Compare to traditional algebraic effects?
+RetryPGinstead of wait / hold agents, could we have wait / hold principle ports, then build the effects off that?EditYes! That's a much more elegant solution. Looking at the papers, we can model this similarly to how synchronization is handled in DBSP using non-deterministic interaction, but using wait/hold principal ports instead:
+typescript// Core agent types with wait/hold ports
+type AgentType = 
+  | { type: "constructor", ports: ["compute", "wait", "hold"] }
+  | { type: "effect", ports: ["compute", "wait"] }
+  | { type: "handler", ports: ["compute", "hold"] }
+
+// Example effect definition
+type Effect = {
+  id: string
+  type: string
+  args: any
+}
+
+class InteractionNet {
+  // Create an agent with wait/hold ports
+  createConstructor() {
+    return this.createNode({
+      type: "constructor",
+      // Principal ports that can interact:
+      ports: ["compute", "wait", "hold"]
+    })
+  }
+
+  // Create effect agent - has wait port
+  createEffect<T>(effect: Effect) {
+    const agent = this.createNode({
+      type: "effect",
+      ports: ["compute", "wait"]
+    })
+    agent.value = effect
+    return agent
+  }
+
+  // Create handler - has hold port
+  createHandler(handlers: {[key: string]: (args: any) => any}) {
+    const agent = this.createNode({
+      type: "handler", 
+      ports: ["compute", "hold"]
+    })
+    agent.value = handlers
+    return agent
+  }
+}
+
+// Interaction rules define what happens when ports connect
+const rules = {
+  // Effect waits for handler
+  "effect:wait + handler:hold": (effect, handler) => {
+    const result = handler.value[effect.value.type]?.(effect.value.args)
+    return result
+  },
+
+  // Value held while waiting
+  "constructor:wait + constructor:hold": (value, held) => {
+    // Hold original value while waiting
+    return held.value
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = useNet()
+
+  async function saveTodo(todo: Todo) {
+    // Create effect
+    const saveEffect = net.createEffect({
+      id: generateId(),
+      type: 'async',
+      args: todo
+    })
+
+    // Create handler
+    const handler = net.createHandler({
+      async: async (todo) => {
+        const result = await fetch('/api/todos', {
+          method: 'POST',
+          body: JSON.stringify(todo)
+        }).then(r => r.json())
+        return result
+      }
+    })
+
+    // Connect wait/hold ports
+    net.connect(saveEffect.ports.wait, handler.ports.hold)
+
+    // Effect waits for handler result
+    return saveEffect
+  }
+}
+The key differences:
+
+Wait/hold are principal ports that can interact directly
+Effects naturally wait for handlers through port interaction
+Values can be held during waiting through port interaction
+No need for special agent types - just ports that can interact
+
+This feels much more natural because:
+
+Waiting emerges from interaction rules between ports
+Effects are just agents with wait ports
+Handlers are just agents with hold ports
+The waiting pattern comes from port interaction rather than special agents
+
+Would you like me to:
+
+Show more complex interaction patterns?
+Add more effect examples?
+Show how to compose effects?
+Explore type safety more?
+RetryPGnow combine that with the syncing interaction rules from earlier.EditGreat idea! Let's combine the sync rules with wait/hold port interactions to create a system that can handle both effects and sync:
+typescript// Core port types
+type PortType = 
+  | "compute"  // Regular computation
+  | "wait"     // Waiting for result
+  | "hold"     // Holding value
+  | "sync"     // Network sync
+  | "remote"   // Remote mirror
+
+type AgentType = 
+  | { type: "constructor", ports: ["compute", "wait", "hold", "sync"] }
+  | { type: "effect", ports: ["compute", "wait"] }
+  | { type: "handler", ports: ["compute", "hold"] }
+  | { type: "sync", ports: ["compute", "sync", "remote"] }
+
+// Rules can be local or remote
+type Rule = {
+  id: string
+  type: string
+  location: "local" | "remote"
+  path: string[]
+  args: any
+}
+
+// Effects can require server interaction
+type Effect = {
+  id: string
+  type: string
+  location: "local" | "remote"
+  args: any
+}
+
+class InteractionNet {
+  createValue<T>(initial: T) {
+    const value = this.createNode({
+      type: "constructor",
+      ports: ["compute", "wait", "hold", "sync"]
+    })
+    value.value = initial
+
+    // Create sync agent to handle network boundary
+    const sync = this.createNode({
+      type: "sync",
+      ports: ["compute", "sync", "remote"]
+    })
+
+    // Connect value to sync
+    net.connect(value.ports.sync, sync.ports.compute)
+
+    return value
+  }
+
+  createEffect<T>(effect: Effect) {
+    const agent = this.createNode({
+      type: "effect",
+      ports: ["compute", "wait"]
+    })
+    agent.value = effect
+    return agent
+  }
+
+  // Interaction rules
+  private rules = {
+    // Local effect waiting for handler
+    "effect:wait + handler:hold": (effect, handler) => {
+      if (effect.value.location === "local") {
+        return handler.value[effect.value.type]?.(effect.value.args)
+      }
+    },
+
+    // Remote effect waiting for sync
+    "effect:wait + sync:compute": (effect, sync) => {
+      if (effect.value.location === "remote") {
+        // Send to server through sync
+        return this.sendToServer(effect.value)
+      }
+    },
+
+    // Value sync interaction
+    "constructor:sync + sync:compute": (value, sync) => {
+      // Propagate changes to remote
+      this.syncValue(value, sync)
+    },
+
+    // Remote value interaction 
+    "sync:remote + sync:compute": (remote, sync) => {
+      // Handle remote changes
+      this.handleRemoteChanges(remote, sync)
+    }
+  }
+}
+
+// Example combining effects and sync
+function TodoApp() {
+  const net = useNet()
+
+  // Create synced todo list
+  const todos = net.createValue<Todo[]>([])
+
+  // Create effect handler
+  const handler = net.createHandler({
+    validate: (todo: Todo) => {
+      return todo.text.length > 0
+    },
+    notify: (message: string) => {
+      console.log(message)
+    }
+  })
+
+  async function addTodo(text: string) {
+    // Local validation effect
+    const validateEffect = net.createEffect({
+      id: generateId(),
+      type: 'validate',
+      location: 'local',
+      args: { text } 
+    })
+
+    // Connect to handler
+    net.connect(validateEffect.ports.wait, handler.ports.hold)
+
+    if (validateEffect.value.result) {
+      // Remote save effect
+      const saveEffect = net.createEffect({
+        id: generateId(),
+        type: 'saveTodo',
+        location: 'remote',
+        args: { text }
+      })
+
+      // This will go through sync
+      net.connect(saveEffect.ports.wait, todos.ports.sync)
+
+      // Notify on success
+      const notifyEffect = net.createEffect({
+        id: generateId(),
+        type: 'notify',
+        location: 'local',
+        args: 'Todo saved!'
+      })
+
+      net.connect(notifyEffect.ports.wait, handler.ports.hold)
+    }
+  }
+
+  return { todos, addTodo }
+}
+
+// Server side handling
+class ServerNet extends InteractionNet {
+  handleEffect(effect: Effect) {
+    switch (effect.type) {
+      case 'saveTodo': {
+        const { text } = effect.args
+        // Save to DB
+        const todo = await this.db.todos.create({ text })
+        // Return result
+        return todo
+      }
+    }
+  }
+}
+Key aspects:
+
+Agents can have multiple principal ports for different interactions:
+
+
+compute for normal computation
+wait/hold for effects
+sync/remote for network boundary
+
+
+Effects can be:
+
+
+Local (handled by local handlers)
+Remote (go through sync port)
+
+
+Values automatically sync through:
+
+
+sync port connecting to sync agent
+remote port for remote mirror
+
+
+Interaction rules handle:
+
+
+Effect waiting
+Value syncing
+Remote changes
+
+Benefits:
+
+Clean separation of:
+
+
+Local effects
+Remote effects
+Value syncing
+
+
+Natural composition of:
+
+
+Effect handling
+Network sync
+State management
+
+
+Everything emerges from port interactions
+
+Would you like me to:
+
+Add more complex examples?
+Show error handling?
+Add optimistic updates?
+Show concurrent interactions?
+RetryPGcompare this to the version with wait / hold agents. How could this solution be improved / made more elegant? If thats even possibleEditLet's compare the approaches:
+Wait/Hold Agents Approach:
+typescript// Have to create extra agents for waiting
+const waitAgent = new WaitAgent()
+const holdAgent = new HoldAgent()
+
+// Have to manually wire them up
+net.connect(value, waitAgent)
+net.connect(waitAgent, holdAgent)
+
+// Have to track state in agents
+waitAgent.value = originalValue
+holdAgent.continuation = continuation
+
+// Have to manually manage cleanup
+net.disconnect(waitAgent)
+net.disconnect(holdAgent)
+Principal Ports Approach:
+typescript// Ports are part of agent definition
+type AgentType = {
+  type: "constructor"
+  ports: ["compute", "wait", "hold", "sync"]
+}
+
+// Interactions happen directly through ports
+net.connect(effect.ports.wait, handler.ports.hold)
+
+// State is implicit in port connections
+// Cleanup happens automatically when ports disconnect
+The Principal Ports approach is more elegant because:
+
+The waiting pattern is encoded in the type system via ports
+Less moving parts (no extra agents)
+Cleaner interaction rules
+More composable (can mix and match ports)
+
+However, I think we could improve it further:
+typescript// 1. Make port types more semantic 
+type Port = 
+  | { type: "value" }     // Regular values
+  | { type: "effect" }    // Effect requests
+  | { type: "handle" }    // Effect handlers
+  | { type: "remote" }    // Network sync
+  | { type: "continue" }  // Continuations
+
+// 2. Make interaction rules more declarative
+type InteractionRule = {
+  ports: [Port, Port]
+  interact: (a: Agent, b: Agent) => void
+}
+
+const rules: InteractionRule[] = [
+  // Effect handling
+  {
+    ports: [{ type: "effect" }, { type: "handle" }],
+    interact: (effect, handler) => {
+      const result = handler.handle(effect.value)
+      effect.continue(result)
+    }
+  },
+  
+  // Network sync
+  {
+    ports: [{ type: "value" }, { type: "remote" }],
+    interact: (local, remote) => {
+      remote.sync(local.value)
+    }
+  }
+]
+
+// 3. Make composition more explicit
+type AgentSpec = {
+  type: string
+  ports: Port[]
+  // Define how agent composes
+  compose?: (other: Agent) => Agent
+}
+
+// 4. Add algebraic properties
+type Port = {
+  type: PortType
+  // Define how ports combine
+  combine?: (other: Port) => Port
+}
+
+// 5. Make synchronization implicit
+const value = net.createValue({
+  type: "value",
+  sync: true // Automatically adds sync ports
+})
+Key improvements:
+
+More semantic port types that describe their purpose
+Declarative interaction rules
+Explicit composition rules
+Algebraic properties for combining ports/agents
+Implicit synchronization
+
+This gives us:
+
+Better type safety
+More composable system
+More declarative rules
+Less boilerplate
+Cleaner semantics
+
+The core insight is that by making ports and their interactions more semantic and declarative, we get a cleaner system that's easier to reason about and extend.
+The key is finding the right balance between:
+
+Expressiveness (enough ports to model what we need)
+Simplicity (not too many port types)
+Composability (ports that combine cleanly)
+Semantics (ports that mean something)
+
+What do you think? There's probably still room for improvement in:
+
+Port type system
+Interaction rule specification
+Composition rules
+Synchronization model
+
+Let me know if you'd like me to explore any of those areas further!RetryPGwhy separate combine from the interaction rule? I liked how we had it before, where the interaction rule returned how it combined?EditYou're right! Having the interaction rule define how agents combine is more elegant. Let's refine the design:
+typescript// Core port types
+type PortType = 
+  | "value"     // Regular values
+  | "effect"    // Effect requests 
+  | "handle"    // Effect handlers
+  | "remote"    // Network sync
+  | "continue"  // Continuations
+
+type Port = {
+  type: PortType
+  agent: Agent
+  index: number
+}
+
+type Agent = {
+  id: string
+  type: string
+  ports: Port[]
+  value: any
+}
+
+class InteractionNet {
+  // Interaction rules define both matching and combining
+  private rules = {
+    // Effect handling
+    "effect+handle": (effect: Agent, handler: Agent) => {
+      const result = handler.value[effect.value.type]?.(effect.value.args)
+      return result // How agents combine
+    },
+
+    // Value sync
+    "value+remote": (local: Agent, remote: Agent) => {
+      // Sync returns how to merge values
+      return this.sync(local.value, remote.value)
+    },
+
+    // Continuation
+    "effect+continue": (effect: Agent, cont: Agent) => {
+      return effect.value // Continue with effect value
+    }
+  }
+
+  // Connecting ports triggers interaction
+  connect(a: Port, b: Port) {
+    const ruleKey = `${a.type}+${b.type}`
+    const rule = this.rules[ruleKey]
+    
+    if (rule) {
+      const result = rule(a.agent, b.agent)
+      // Result defines how agents combine
+      this.combine(a.agent, b.agent, result)
+    }
+  }
+}
+
+// Example usage stays clean:
+function TodoApp() {
+  const net = useNet()
+
+  const todos = net.createValue<Todo[]>([])
+  
+  async function addTodo(todo: Todo) {
+    const effect = net.createEffect({
+      type: 'saveTodo',
+      args: todo
+    })
+
+    // Effect port connects to handler
+    net.connect(effect.ports.effect, handler.ports.handle)
+    
+    // Value automatically syncs through remote port
+    net.connect(todos.ports.value, sync.ports.remote)
+  }
+}
+This is better because:
+
+The interaction rule completely defines how ports interact and combine
+Composition emerges from interaction rules
+Port types are semantic but minimal
+Connection logic is simpler
+The sync model is cleaner
+
+The key insight is that by having interaction rules define both matching and combining, we get a more cohesive model that matches how interaction nets work in the papers.
+Would you like me to elaborate on any part of this design?RetryPGwhich is better, think it through:
+when connecting two agents ports, it does not execute any code by default. It just defines a connection in the network, to be reduced explicitly later.when connecting two agents ports, the interaction rule is executed at that pointEditLooking at the papers, I think making connections passive and requiring explicit reduction is better, because:
+
+From Lafont's interaction combinators paper:
+
+
+Reduction is separate from graph construction
+Multiple active pairs can exist at once
+Reduction order doesn't matter (confluence)
+
+
+From the DBSP paper:
+
+
+Separating construction from evaluation allows optimization
+Net reduction can be scheduled efficiently
+Multiple reductions can happen in parallel
+
+Here's how I'd redesign it:
+typescriptclass InteractionNet {
+  private connections = new Map<string, Connection>()
+  private activeConnections = new Set<string>()
+
+  // Making a connection just records it
+  connect(a: Port, b: Port) {
+    const connId = generateId()
+    this.connections.set(connId, {
+      source: a,
+      target: b
+    })
+
+    // Mark as active if it's an interaction
+    if (this.isActivePair(a, b)) {
+      this.activeConnections.add(connId)
+    }
+  }
+
+  // Find and reduce all active pairs
+  reduce() {
+    let changed = true
+    while (changed) {
+      changed = false
+      
+      for (const connId of this.activeConnections) {
+        const conn = this.connections.get(connId)!
+        
+        if (this.reduceConnection(conn)) {
+          changed = true
+          this.activeConnections.delete(connId)
+          this.connections.delete(connId)
+        }
+      }
+    }
+  }
+
+  private reduceConnection(conn: Connection): boolean {
+    const {source, target} = conn
+    const ruleKey = `${source.type}+${target.type}`
+    const rule = this.rules[ruleKey]
+
+    if (rule) {
+      const result = rule(source.agent, target.agent)
+      // Apply result, creating new connections as needed
+      this.applyReduction(source.agent, target.agent, result)
+      return true
+    }
+
+    return false
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = useNet()
+  
+  function saveTodo(todo: Todo) {
+    // Create effect and handler
+    const effect = net.createEffect({
+      type: 'saveTodo',
+      args: todo
+    })
+    const handler = net.createHandler({
+      saveTodo: async (todo) => {
+        // Save to server...
+      }
+    })
+
+    // Connect - doesn't execute yet
+    net.connect(effect.ports.effect, handler.ports.handle)
+
+    // Only reduce when we want
+    net.reduce()
+  }
+}
+Benefits of this approach:
+
+Better matches interaction net theory:
+
+
+Clear separation of net construction and reduction
+Preserves confluence property
+Multiple active pairs can exist
+
+
+More efficient:
+
+
+Can batch reductions
+Can optimize reduction order
+Can parallelize reductions
+
+
+More flexible:
+
+
+Can inspect net before reduction
+Can control when reductions happen
+Can implement different reduction strategies
+
+
+Easier to debug:
+
+
+Can see all active pairs
+Can step through reductions
+Can visualize net state
+
+
+More composable:
+
+
+Can build complex nets without side effects
+Can reduce sub-nets independently
+Can merge nets safely
+
+The tradeoff is that it's slightly more complex to use, since you need to explicitly call reduce(). However, I think this is worth it for the benefits it provides.
+What do you think? Would you like me to:
+
+Show more complex reduction strategies?
+Add visualization tools?
+Add parallel reduction?
+Show how to optimize reduction order?
+RetryPGI like that. But still remember to store the old interactions / connections, so that we may sync them, and have rollbacks? Maybe snapshot before / after? idk. Think that throughEditYes! We can track the history of interactions and connections for sync and rollback. Looking at the DBSP paper's approach to versioning and changes, here's how we could design it:
+typescripttype ConnectionHistory = {
+  id: string
+  version: number
+  timestamp: number
+  source: Port
+  target: Port
+  active: boolean
+  // What happened to this connection
+  status: 'created' | 'reduced' | 'deleted'
+}
+
+type ReductionSnapshot = {
+  version: number
+  timestamp: number
+  // All connections that existed at this point
+  connections: Map<string, ConnectionHistory>
+  // State of all agents at this point
+  agents: Map<string, {
+    id: string
+    value: any
+    ports: Port[]
+  }>
+}
+
+class InteractionNet {
+  private connections = new Map<string, ConnectionHistory>()
+  private activeConnections = new Set<string>()
+  private version = 0
+  private snapshots: ReductionSnapshot[] = []
+
+  connect(a: Port, b: Port) {
+    const connId = generateId()
+    const conn: ConnectionHistory = {
+      id: connId,
+      version: this.version,
+      timestamp: Date.now(),
+      source: a,
+      target: b,
+      active: this.isActivePair(a, b),
+      status: 'created'
+    }
+
+    this.connections.set(connId, conn)
+    if (conn.active) {
+      this.activeConnections.add(connId)
+    }
+
+    // Track connection history
+    this.takeSnapshot()
+  }
+
+  reduce() {
+    // Take snapshot before reduction
+    this.takeSnapshot()
+
+    let changed = true
+    while (changed) {
+      changed = false
+      
+      for (const connId of this.activeConnections) {
+        const conn = this.connections.get(connId)!
+        
+        if (this.reduceConnection(conn)) {
+          changed = true
+          // Don't delete - mark as reduced
+          conn.status = 'reduced'
+          conn.active = false
+          this.activeConnections.delete(connId)
+          this.version++
+        }
+      }
+    }
+
+    // Take snapshot after reduction
+    this.takeSnapshot()
+  }
+
+  private takeSnapshot(): ReductionSnapshot {
+    const snapshot: ReductionSnapshot = {
+      version: this.version,
+      timestamp: Date.now(),
+      connections: new Map(this.connections),
+      agents: new Map(
+        Array.from(this.getAgents()).map(agent => [
+          agent.id,
+          {
+            id: agent.id,
+            value: agent.value,
+            ports: [...agent.ports]
+          }
+        ])
+      )
+    }
+
+    this.snapshots.push(snapshot)
+    return snapshot
+  }
+
+  // Rollback to a specific version
+  rollback(version: number) {
+    const snapshot = this.snapshots.find(s => s.version === version)
+    if (!snapshot) throw new Error('Version not found')
+
+    this.connections = new Map(snapshot.connections)
+    this.activeConnections = new Set(
+      Array.from(snapshot.connections.values())
+        .filter(c => c.active)
+        .map(c => c.id)
+    )
+    
+    // Restore agent state
+    for (const [id, state] of snapshot.agents) {
+      const agent = this.getAgent(id)
+      if (agent) {
+        agent.value = state.value
+        agent.ports = [...state.ports]
+      }
+    }
+
+    this.version = version
+  }
+
+  // Get changes since a version for sync
+  getChangesSince(version: number): {
+    connections: ConnectionHistory[]
+    agents: Agent[]
+  } {
+    const changes = {
+      connections: Array.from(this.connections.values())
+        .filter(c => c.version > version),
+      agents: Array.from(this.getAgents())
+        .filter(a => this.getAgentVersion(a) > version)
+    }
+    return changes
+  }
+
+  // Apply changes from another net
+  applyChanges(changes: {
+    connections: ConnectionHistory[]
+    agents: Agent[]
+  }) {
+    // Take snapshot before applying changes
+    this.takeSnapshot()
+
+    // Apply changes
+    for (const conn of changes.connections) {
+      if (conn.version > this.version) {
+        this.connections.set(conn.id, conn)
+        if (conn.active) {
+          this.activeConnections.add(conn.id)
+        }
+      }
+    }
+
+    for (const agent of changes.agents) {
+      const local = this.getAgent(agent.id)
+      if (local && this.getAgentVersion(agent) > this.getAgentVersion(local)) {
+        local.value = agent.value
+        local.ports = [...agent.ports]
+      }
+    }
+
+    this.version = Math.max(this.version, 
+      ...changes.connections.map(c => c.version))
+
+    // Take snapshot after applying changes
+    this.takeSnapshot()
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = useNet()
+
+  async function saveTodo(todo: Todo) {
+    // Create effect/handler
+    const effect = net.createEffect({
+      type: 'saveTodo',
+      args: todo
+    })
+    const handler = net.createHandler({
+      saveTodo: async (todo) => {
+        try {
+          await saveToDB(todo)
+        } catch (err) {
+          // Can rollback on error
+          net.rollback(effect.version)
+        }
+      }
+    })
+
+    // Connect and reduce
+    net.connect(effect.ports.effect, handler.ports.handle)
+    net.reduce()
+
+    // Sync changes to other clients
+    const changes = net.getChangesSince(lastSyncVersion)
+    await syncChanges(changes)
+  }
+}
+Key features:
+
+Complete history tracking:
+
+
+All connections preserved with versions
+Agent state snapshots
+Before/after reduction snapshots
+
+
+Clean rollback support:
+
+
+Can rollback to any version
+Restores both connections and state
+Preserves history
+
+
+Efficient sync:
+
+
+Track changes by version
+Only sync what's changed
+Preserve causality
+
+
+Debugging support:
+
+
+Can inspect history
+Can step through reductions
+Can analyze changes
+
+The tradeoffs are:
+
+More memory usage for history
+More complex sync protocol
+Need garbage collection for old snapshots
+
+Would you like me to:
+
+Add garbage collection?
+Show more complex sync patterns?
+Add debugging tools?
+Show how to optimize history storage?
+RetryPGAdd constructor / duplicator / eraser / updater agentsEditI'll extend our design with the core interaction combinators plus an updater agent for handling changes:
+typescript// Core agent types
+type AgentType = 
+  | "constructor"  // γ - constructor of arity 2
+  | "duplicator"   // δ - duplicator of arity 2 
+  | "eraser"       // ε - eraser of arity 0
+  | "updater"      // υ - updater for changes
+
+type PortType = 
+  | "principal"  // Main port (for interaction)
+  | "auxiliary"  // Additional ports
+  | "value"      // For storing values
+  | "remote"     // For sync
+
+class InteractionNet {
+  private connections = new Map<string, ConnectionHistory>()
+  private activeConnections = new Set<string>()
+  private version = 0
+
+  // Core interaction rules
+  private rules = {
+    // Constructor annihilation (γγ)
+    "constructor+constructor": (a: Agent, b: Agent) => {
+      // Connect auxiliary ports crosswise
+      return {
+        connections: [
+          { from: a.auxiliary[0], to: b.auxiliary[1] },
+          { from: a.auxiliary[1], to: b.auxiliary[0] }
+        ]
+      }
+    },
+
+    // Duplicator annihilation (δδ)
+    "duplicator+duplicator": (a: Agent, b: Agent) => {
+      // Create two new duplicators
+      const d1 = this.createDuplicator()
+      const d2 = this.createDuplicator()
+
+      return {
+        newAgents: [d1, d2],
+        connections: [
+          { from: d1.auxiliary[0], to: a.auxiliary[0] },
+          { from: d1.auxiliary[1], to: b.auxiliary[0] },
+          { from: d2.auxiliary[0], to: a.auxiliary[1] },
+          { from: d2.auxiliary[1], to: b.auxiliary[1] }
+        ]
+      }
+    },
+
+    // Eraser annihilation (εε)  
+    "eraser+eraser": (a: Agent, b: Agent) => {
+      // Both erasers disappear
+      return {
+        delete: [a, b]
+      }
+    },
+
+    // Constructor + Duplicator (γδ)
+    "constructor+duplicator": (con: Agent, dup: Agent) => {
+      // Create new constructors and duplicator
+      const c1 = this.createConstructor()
+      const c2 = this.createConstructor()
+      const d = this.createDuplicator()
+
+      return {
+        newAgents: [c1, c2, d],
+        connections: [
+          { from: d.auxiliary[0], to: c1.principal },
+          { from: d.auxiliary[1], to: c2.principal },
+          // Connect remaining ports appropriately
+          { from: c1.auxiliary[0], to: con.auxiliary[0] },
+          { from: c2.auxiliary[0], to: con.auxiliary[1] },
+          // etc...
+        ]
+      }
+    },
+
+    // Constructor + Eraser (γε)
+    "constructor+eraser": (con: Agent, era: Agent) => {
+      // Create new erasers for auxiliary ports
+      const e1 = this.createEraser()
+      const e2 = this.createEraser()
+
+      return {
+        newAgents: [e1, e2],
+        connections: [
+          { from: e1.principal, to: con.auxiliary[0] },
+          { from: e2.principal, to: con.auxiliary[1] }
+        ]
+      }
+    },
+
+    // Duplicator + Eraser (δε)
+    "duplicator+eraser": (dup: Agent, era: Agent) => {
+      // Create new erasers
+      const e1 = this.createEraser()
+      const e2 = this.createEraser()
+
+      return {
+        newAgents: [e1, e2],
+        connections: [
+          { from: e1.principal, to: dup.auxiliary[0] },
+          { from: e2.principal, to: dup.auxiliary[1] }
+        ]
+      }
+    },
+
+    // Updater interactions
+    "updater+constructor": (upd: Agent, con: Agent) => {
+      // Apply update to constructor value
+      const newValue = applyUpdate(con.value, upd.value)
+      return {
+        updateValue: {
+          agent: con,
+          value: newValue
+        }
+      }
+    },
+
+    "updater+duplicator": (upd: Agent, dup: Agent) => {
+      // Duplicate the update
+      const upd1 = this.createUpdater(upd.value)
+      const upd2 = this.createUpdater(upd.value)
+
+      return {
+        newAgents: [upd1, upd2],
+        connections: [
+          { from: upd1.principal, to: dup.auxiliary[0] },
+          { from: upd2.principal, to: dup.auxiliary[1] }
+        ]
+      }
+    }
+  }
+
+  // Creator functions
+  createConstructor(value?: any) {
+    return this.createAgent({
+      type: "constructor",
+      ports: ["principal", "auxiliary", "auxiliary"],
+      value
+    })
+  }
+
+  createDuplicator() {
+    return this.createAgent({
+      type: "duplicator",
+      ports: ["principal", "auxiliary", "auxiliary"]
+    })
+  }
+
+  createEraser() {
+    return this.createAgent({
+      type: "eraser",
+      ports: ["principal"]
+    })
+  }
+
+  createUpdater(update: any) {
+    return this.createAgent({
+      type: "updater",
+      ports: ["principal"],
+      value: update
+    })
+  }
+
+  // Example: Create a shared value with duplicator
+  createSharedValue<T>(initial: T) {
+    const value = this.createConstructor(initial)
+    const dup = this.createDuplicator()
+
+    this.connect(value.ports.principal, dup.ports.principal)
+
+    return {
+      // Get reader port
+      read: () => dup.auxiliary[0],
+      // Create update
+      update: (change: Partial<T>) => {
+        const updater = this.createUpdater(change)
+        this.connect(updater.ports.principal, value.ports.principal)
+        this.reduce()
+      }
+    }
+  }
+}
+
+// Example usage
+function TodoApp() {
+  const net = useNet()
+
+  // Create shared todo list
+  const todos = net.createSharedValue<Todo[]>([])
+
+  function addTodo(todo: Todo) {
+    const readPort = todos.read()
+    const currentTodos = readPort.agent.value
+
+    // Create update
+    todos.update({
+      type: 'add',
+      todo
+    })
+
+    // Network will reduce automatically
+    net.reduce()
+  }
+
+  function toggleTodo(id: string) {
+    todos.update({
+      type: 'toggle',
+      id
+    })
+    net.reduce()
+  }
+}
+Key features:
+
+Core interaction combinators (γ, δ, ε) with standard rules
+New updater (υ) agent for handling changes
+Rules produce:
+
+
+New agents
+New connections
+Value updates
+Deletions
+
+
+Clean composition through port connections
+Updates propagate through duplicators
+
+Would you like me to:
+
+Add more interaction rules?
+Show more complex data structures?
+Add optimization patterns?
+Show network sync examples?
+RetryPGShow more complex data structures, and efficient updates / network sync. Maybe an interaction rule can return an update agent, along with the updated agent. and there can be a interaction rule for update agents connected to any agent of a given type, that will handle the diff / efficient updates?EditThis is a great idea! We can use update agents to efficiently handle diffs and propagate changes. Here's how we could design it:
+typescript// Update types for different data structures
+type Update = {
+  type: 'update'
+  path: string[]  // Path to updated value
+  value: any      // New value
+  diff?: any      // Optional efficient diff
+} | {
+  type: 'delete'
+  path: string[]
+} | {
+  type: 'insert'
+  path: string[]
+  value: any
+}
+
+// Specialized update agents for different data types
+type UpdateAgent = {
+  type: 'update'
+  dataType: 'map' | 'list' | 'text' | 'counter'
+  update: Update
+}
+
+class InteractionNet {
+  private rules = {
+    // Update agent interaction with any value
+    "update+*": (update: UpdateAgent, target: Agent) => {
+      // Create new update agents based on diff
+      const newUpdates = this.splitUpdate(update, target)
+      
+      return {
+        // Apply update to target
+        updateValue: {
+          agent: target,
+          value: this.applyUpdate(target.value, update.update)
+        },
+        // Create new update agents for efficient propagation
+        newAgents: newUpdates,
+        // Connect new updates to duplicated values
+        connections: newUpdates.map(u => ({
+          from: u.ports.principal,
+          to: target.ports.auxiliary[0] // Connect to duplicated value
+        }))
+      }
+    },
+
+    // Map updates
+    "update:map+duplicator": (update: UpdateAgent, dup: Agent) => {
+      if (update.dataType === 'map') {
+        // Split update by changed keys
+        const updates = Object.entries(update.update.diff || {})
+          .map(([key, change]) => 
+            this.createUpdateAgent('map', {
+              type: 'update',
+              path: [...update.update.path, key],
+              value: change
+            })
+          )
+
+        return {
+          newAgents: updates,
+          connections: updates.flatMap((u, i) => ([
+            { from: u.ports.principal, to: dup.auxiliary[0] },
+            { from: u.ports.principal.clone(), to: dup.auxiliary[1] }
+          ]))
+        }
+      }
+    },
+
+    // List updates
+    "update:list+duplicator": (update: UpdateAgent, dup: Agent) => {
+      if (update.dataType === 'list') {
+        // Split update by chunks for efficient diffing
+        const chunks = diffList(update.update.value, dup.value)
+        const updates = chunks.map(chunk =>
+          this.createUpdateAgent('list', {
+            type: 'update',
+            path: [...update.update.path, chunk.index.toString()],
+            value: chunk.value,
+            diff: chunk
+          })
+        )
+
+        return {
+          newAgents: updates,
+          connections: updates.flatMap(u => ([
+            { from: u.ports.principal, to: dup.auxiliary[0] },
+            { from: u.ports.principal.clone(), to: dup.auxiliary[1] }
+          ]))
+        }
+      }
+    },
+
+    // Text updates (using CRDT)
+    "update:text+duplicator": (update: UpdateAgent, dup: Agent) => {
+      if (update.dataType === 'text') {
+        // Split into character-wise updates
+        const changes = diffText(update.update.value, dup.value)
+        const updates = changes.map(change =>
+          this.createUpdateAgent('text', {
+            type: change.type,
+            path: [...update.update.path, change.index.toString()],
+            value: change.value
+          })
+        )
+
+        return {
+          newAgents: updates,
+          connections: updates.flatMap(u => ([
+            { from: u.ports.principal, to: dup.auxiliary[0] },
+            { from: u.ports.principal.clone(), to: dup.auxiliary[1] }
+          ]))
+        }
+      }
+    }
+  }
+
+  // Create efficient data structures
+  createSharedMap<T>() {
+    return this.createSharedStructure('map', {})
+  }
+
+  createSharedList<T>() {
+    return this.createSharedStructure('list', [])
+  }
+
+  createSharedText() {
+    return this.createSharedStructure('text', '')
+  }
+
+  private createSharedStructure(type: string, initial: any) {
+    const value = this.createConstructor(initial)
+    const dup = this.createDuplicator()
+
+    this.connect(value.ports.principal, dup.ports.principal)
+
+    return {
+      read: () => dup.auxiliary[0],
+      update: (change: any) => {
+        const update = this.createUpdateAgent(type, {
+          type: 'update',
+          path: [],
+          value: change,
+          diff: this.createDiff(type, value.value, change)
+        })
+        this.connect(update.ports.principal, value.ports.principal)
+        this.reduce()
+      }
+    }
+  }
+}
+
+// Example: Complex collaborative document
+function DocumentEditor() {
+  const net = useNet()
+
+  // Document structure
+  const doc = net.createSharedMap()
+  
+  // Sections are lists of blocks
+  const sections = net.createSharedList()
+  const connect(doc.read(), sections.read())
+
+  // Each block can be text or other content
+  function addTextBlock(sectionId: string, text: string) {
+    const block = net.createSharedText()
+    block.update(text)
+
+    sections.update({
+      type: 'insert',
+      path: [sectionId],
+      value: {
+        type: 'text',
+        content: block
+      }
+    })
+  }
+
+  // Efficiently sync changes
+  net.onRemoteUpdate(update => {
+    // Update is automatically split and propagated
+    // through update agents
+    net.reduce()
+  })
+
+  return {
+    sections,
+    addTextBlock
+  }
+}
+
+// Example: Real-time drawing
+function DrawingCanvas() {
+  const net = useNet()
+
+  // Strokes list with efficient updates
+  const strokes = net.createSharedList()
+
+  function addStroke(points: Point[]) {
+    strokes.update({
+      type: 'insert',
+      path: [],
+      value: {
+        points,
+        color: currentColor,
+        width: currentWidth
+      }
+    })
+  }
+
+  function updateStroke(id: string, newPoints: Point[]) {
+    // Only sends changed points
+    strokes.update({
+      type: 'update',
+      path: [id, 'points'],
+      value: newPoints,
+      diff: diffPoints(strokes.read().value[id].points, newPoints)
+    })
+  }
+}
+Key aspects:
+
+Update agents handle:
+
+
+Efficient diffs
+Granular changes
+CRDT operations
+
+
+Updates are split into:
+
+
+Smallest possible changes
+Most efficient representation
+Type-specific operations
+
+
+Network sync is:
+
+
+Automatic through update propagation
+Efficient through diffs
+Conflict-free through CRDTs
+
+Would you like me to:
+
+Add more data structure examples?
+Show more complex update patterns?
+Add CRDT strategies?
+Show optimization techniques?

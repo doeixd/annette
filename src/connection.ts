@@ -3,9 +3,11 @@ import {
   IBoundPort,
   IPort,
   isBoundPort,
+  PortInstanceKey,
   PortsDefObj,
   PortsMap,
   PortTypes,
+  getPortInstanceKey
 } from "./port";
 
 export interface IConnection<
@@ -21,9 +23,11 @@ export interface IConnection<
 
   source: Source;
   sourcePort: SourcePort;
+  sourcePortKey: PortInstanceKey;
 
   destination: Destination;
   destinationPort: DestinationPort;
+  destinationPortKey: PortInstanceKey;
 }
 
 export function isConnection(arg: any): arg is IConnection {
@@ -129,11 +133,11 @@ export type ConnectArg = IBoundPort | string | IAgent;
 export function Connection<
   SP extends IBoundPort,
   DP extends IBoundPort,
-  N extends string,
+  N extends string = string,
 >(
   sourcePort: SP,
   destinationPort: DP,
-  name: N,
+  name?: N,
 ): typeof sourcePort extends IBoundPort<infer SA, infer SN, infer ST>
   ? typeof destinationPort extends IBoundPort<infer DA, infer DN, infer DT>
     ? IConnection<
@@ -153,26 +157,28 @@ export function Connection<
 >(
   source: Source,
   destination: Destination,
-  name: Name,
+  name?: Name,
 ): IConnection<Name, Source, Destination>;
-
-// export function Connection<Source extends string = string, Destination extends string = string, Name extends string = string>(
-//   source: Source,
-//   destination: Destination,
-//   name: Name
-// ): IConnection<Name, IAgent<Source>, IAgent<Destination>>;
 
 // Implementation signature
 export function Connection<
   S extends IAgent | IBoundPort,
   D extends IAgent | IBoundPort,
   N extends string = string,
->(source: S, destination: D, name: N) {
+>(source: S, destination: D, name?: N) {
   const usingPorts = isBoundPort(source) && isBoundPort(destination);
 
   if (usingPorts) {
-    let sa = source.agent;
-    let da = destination.agent;
+    const sourcePort = source as IBoundPort;
+    const destPort = destination as IBoundPort;
+    let sa = sourcePort.agent;
+    let da = destPort.agent;
+    const sourcePortKey = getPortInstanceKey(sourcePort);
+    const destPortKey = getPortInstanceKey(destPort);
+    
+    // Generate a name if not provided
+    const connectionName = name || 
+      `${sa.name}.${sourcePort.name}(${sourcePort.type})-to-${da.name}.${destPort.name}(${destPort.type})` as N;
 
     let c = new (class Connection
       implements
@@ -184,17 +190,19 @@ export function Connection<
           D extends IBoundPort ? D["agent"]["ports"][D["name"]] : never
         >
     {
-      name = name;
+      name = connectionName;
 
       source = sa as S extends IBoundPort ? S["agent"] : never;
-      sourcePort = source as unknown as S extends IBoundPort
+      sourcePort = sourcePort as unknown as S extends IBoundPort
         ? S["agent"]["ports"][S["name"]]
         : never;
+      sourcePortKey = sourcePortKey;
 
       destination = da as D extends IBoundPort ? D["agent"] : never;
-      destinationPort = destination as unknown as D extends IBoundPort
+      destinationPort = destPort as unknown as D extends IBoundPort
         ? D["agent"]["ports"][D["name"]]
         : never;
+      destinationPortKey = destPortKey;
     })();
 
     return Object.seal(c);
@@ -203,8 +211,17 @@ export function Connection<
   const usingAgents = isAgent(source) && isAgent(destination);
 
   if (usingAgents) {
-    let s = source;
-    let d = destination;
+    let s = source as IAgent;
+    let d = destination as IAgent;
+    const sourcePort = s.ports.main;
+    const destPort = d.ports.main;
+    const sourcePortKey = getPortInstanceKey(sourcePort);
+    const destPortKey = getPortInstanceKey(destPort);
+    
+    // Generate a name if not provided
+    const connectionName = name || 
+      `${s.name}.main-to-${d.name}.main` as N;
+
     let c = new (class Connection
       implements
         IConnection<
@@ -213,17 +230,19 @@ export function Connection<
           D extends IAgent ? D : never
         >
     {
-      name = name;
+      name = connectionName;
 
       source = s as S extends IAgent ? S : never;
-      sourcePort = s.ports.main as unknown as S extends IAgent
+      sourcePort = sourcePort as unknown as S extends IAgent
         ? S["ports"][keyof S["ports"]]
         : never;
+      sourcePortKey = sourcePortKey;
 
       destination = d as D extends IAgent ? D : never;
-      destinationPort = d.ports.main as unknown as D extends IAgent
+      destinationPort = destPort as unknown as D extends IAgent
         ? D["ports"][keyof D["ports"]]
         : never;
+      destinationPortKey = destPortKey;
     })();
 
     return Object.seal(c);

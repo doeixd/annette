@@ -1,6 +1,8 @@
-import { IAgent, isAgent } from "./agent";
+import { AgentId, IAgent } from "./agent";
 
-export type PortTypes = "main" | "aux";
+export type PortTypes = "main" | "aux" | "wait" | "hold" | "sync" | "remote";
+export type PortName = string;
+export type PortInstanceKey = `${AgentId}#${PortName}`;
 
 export interface IPort<
   Name extends string = string,
@@ -20,6 +22,11 @@ export type TPortType<P extends IPort<string, PortTypes>> = P extends {
   ? MainPort<P>
   : AuxPort<P>;
 
+export type WaitPort<P extends IPort<string, PortTypes>> = P & { type: "wait" };
+export type HoldPort<P extends IPort<string, PortTypes>> = P & { type: "hold" };
+export type SyncPort<P extends IPort<string, PortTypes>> = P & { type: "sync" };
+export type RemotePort<P extends IPort<string, PortTypes>> = P & { type: "remote" };
+
 export type IsMainPort<P extends IPort<string, PortTypes>> = P extends {
   type: "main";
 }
@@ -30,6 +37,30 @@ export type IsAuxPort<P extends IPort<string, PortTypes>> = P extends {
   type: "aux";
 }
   ? AuxPort<P>
+  : never;
+
+export type IsWaitPort<P extends IPort<string, PortTypes>> = P extends {
+  type: "wait";
+}
+  ? WaitPort<P>
+  : never;
+
+export type IsHoldPort<P extends IPort<string, PortTypes>> = P extends {
+  type: "hold";
+}
+  ? HoldPort<P>
+  : never;
+
+export type IsSyncPort<P extends IPort<string, PortTypes>> = P extends {
+  type: "sync";
+}
+  ? SyncPort<P>
+  : never;
+
+export type IsRemotePort<P extends IPort<string, PortTypes>> = P extends {
+  type: "remote";
+}
+  ? RemotePort<P>
   : never;
 
 export function isPort(port: any): port is IPort<string, PortTypes> {
@@ -50,11 +81,14 @@ export interface IBoundPort<
   agent: A;
 }
 
+export function getPortInstanceKey<P extends IBoundPort>(port: P): PortInstanceKey {
+  return `${port.agent._agentId}#${port.name}`;
+}
+
 export function BoundPort<P extends IPort, A extends IAgent>(
   port: P,
   agent: A,
 ): IBoundPort<A, P["name"]> {
-  // if (isPort(port) && isAgent(agent)) {
   let boundPort = new (class BoundPort
     implements IBoundPort<A, P["name"], P["type"]>
   {
@@ -71,15 +105,22 @@ export function BoundPort<P extends IPort, A extends IAgent>(
   });
 
   return boundPort;
-  // }
 }
 
+/**
+ * Type guard to check if an object is a bound port
+ */
 export function isBoundPort(port: any): port is IBoundPort {
   if (typeof port !== "object") {
     return false;
   } else {
     return (
-      "name" in port && "type" in port && "agent" in port && isAgent(port.agent)
+      "name" in port && 
+      "type" in port && 
+      "agent" in port && 
+      typeof port.agent === "object" && 
+      "name" in port.agent && 
+      "type" in port.agent
     );
   }
 }
@@ -109,6 +150,15 @@ export type BoundPortsMap<
     : never;
 };
 
+/**
+ * Creates a map of bound ports for an agent
+ * 
+ * @template A - Agent type
+ * @template P - Port definitions format
+ * @param agent - The agent to bind ports to
+ * @param ports - Port definitions
+ * @returns A map of bound ports with guaranteed main port
+ */
 export const createBoundPortsMap = <
   A extends IAgent,
   P extends PortArray | PortsDefObj | PortsMap,
@@ -116,9 +166,7 @@ export const createBoundPortsMap = <
   agent: A,
   ports: P,
 ): BoundPortsMap<A, P> & PortsHasMainPort<BoundPortsMap<A, P>> => {
-  if (!isAgent(agent)) {
-    throw new Error("Invalid agent provided");
-  }
+  // The agent check has been moved to the agent factory function
 
   if (isPortArray(ports)) {
     let a = Object.fromEntries(
@@ -178,8 +226,12 @@ export type PortsDefObj<
 
 export function isPortType(str: any): str is PortTypes {
   if (typeof str !== "string") return false;
-  if (str == "aux") return true;
-  if (str == "main") return true;
+  if (str === "aux") return true;
+  if (str === "main") return true;
+  if (str === "wait") return true;
+  if (str === "hold") return true;
+  if (str === "sync") return true;
+  if (str === "remote") return true;
   return false;
 }
 
