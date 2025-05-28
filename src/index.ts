@@ -65,7 +65,7 @@ export {
 // Effect system
 export {
   EffectAgent, HandlerAgent, ResultAgent, ErrorResultAgent,
-  EffectDescription, EffectHandler, EffectHandlers, EffectStatus,
+  EffectDescription, EffectHandler as AlgebraicEffectHandler, EffectHandlers, EffectStatus,
   EffectAgentValue, HandlerAgentValue, ResultAgentValue,
   registerEffectRules, ResultScanner, Constructor
 } from './effect';
@@ -90,8 +90,8 @@ export {
   MapUpdater, ListUpdater, TextUpdater, CounterUpdater,
   createSharedMap, createSharedList, createSharedText, createSharedCounter,
   registerSpecializedUpdaterRules, createTextCRDTOperation,
-  SpecializedUpdaterValue, DataType, MapOperation, ListOperation,
-  TextOperation, CounterOperation
+  SpecializedUpdaterValue, DataType, 
+  // ListOperation, TextOperation, CounterOperation
 } from './specialized-updaters';
 
 // Automated and Synced Networks
@@ -141,7 +141,8 @@ export {
 export {
   // Core reactive primitives
   createSignal, createMemo, createEffect, createResource,
-  createStore, batch as solidBatch, createRoot as solidCreateRoot, initReactive,
+  createStore, batch as solidBatch, createRoot as solidCreateRoot,
+  //  initReactive,
   
   // Advanced features with algebraic effects
   createEffectResource,
@@ -320,6 +321,35 @@ export {
   // Feature flags from seroval
   Feature
 } from './serialization';
+
+// =========== Parallel Execution ===========
+
+export {
+  // Core parallel execution
+  WorkerPool,
+  WorkerPoolOptions,
+  
+  // Parallel network
+  ParallelNetwork,
+  ParallelNetworkOptions,
+  
+  // Rule dependency analysis
+  RuleDependencyAnalyzer,
+  AdvancedRuleDependencyAnalyzer,
+  AdvancedDependencyAnalyzerOptions,
+  
+  // Effect handling
+  ParallelEffectHandler,
+  ParallelEffectHandlerOptions,
+  Effect,
+  EffectHandler,
+  EffectHandlerRegistry,
+  
+  // Plugin
+  createParallelNetwork,
+  createParallelPlugin,
+  ParallelPluginOptions
+} from './parallel';
 
 // Helper function
 export function getRuleKey(agent1Name: string, port1Name: string, agent2Name: string, port2Name: string): string {

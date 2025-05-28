@@ -1,23 +1,17 @@
 import { Agent, AgentId, IAgent, isAgent } from "./agent";
 import {
-  ConnectFn,
   Connection,
-  DisconnectFn,
   IConnection,
   isConnection,
 } from "./connection";
 import {
   IBoundPort,
-  IPort,
   isBoundPort,
   PortInstanceKey,
   PortName,
-  PortsDefObj,
-  PortsMap,
-  PortTypes,
   getPortInstanceKey,
 } from "./port";
-import { AnyRule, IActionRule, IRewriteRule, IRule, ActionReturn, RuleCommand, RuleAddCommand, RuleRemoveCommand } from "./rule";
+import { AnyRule, IActionRule, IRewriteRule, IRule, RuleCommand, RuleAddCommand, RuleRemoveCommand } from "./rule";
 import { v4 as uuidv4 } from 'uuid';
 
 // Type registry to assign integer IDs to agent types for faster matching
@@ -119,7 +113,9 @@ export class OptimizedGraph {
     // Remove connections where this port is the source
     const destKeys = this.connectionsBySourceKey.get(portKey);
     if (destKeys) {
-      for (const destKey of destKeys) {
+      // Convert to array first to avoid iteration issues
+      const destKeysArray = Array.from(destKeys);
+      for (const destKey of destKeysArray) {
         const connectionKey = this.getConnectionKey(portKey, destKey);
         this.connectionObjects.delete(connectionKey);
         
@@ -131,7 +127,9 @@ export class OptimizedGraph {
     }
     
     // Remove connections where this port is the destination
-    for (const [sourceKey, destSet] of this.connectionsBySourceKey.entries()) {
+    // Convert entries to array first to avoid iteration issues
+    const entries = Array.from(this.connectionsBySourceKey.entries());
+    for (const [sourceKey, destSet] of entries) {
       if (destSet.has(portKey)) {
         destSet.delete(portKey);
         
@@ -147,8 +145,8 @@ export class OptimizedGraph {
   }
   
   public addConnection(connection: IConnection): void {
-    const sourceKey = connection.sourcePortKey;
-    const destKey = connection.destinationPortKey;
+    const sourceKey = getPortInstanceKey(connection.sourcePort);
+    const destKey = getPortInstanceKey(connection.destinationPort);
     
     // Store by source port
     if (!this.connectionsBySourceKey.has(sourceKey)) {
@@ -171,14 +169,18 @@ export class OptimizedGraph {
     // Get connections where this port is the source
     const destKeys = this.connectionsBySourceKey.get(portKey);
     if (destKeys) {
-      for (const destKey of destKeys) {
+      // Convert to array first to avoid iteration issues
+      const destKeysArray = Array.from(destKeys);
+      for (const destKey of destKeysArray) {
         const connection = this.getConnection(portKey, destKey);
         if (connection) connections.push(connection);
       }
     }
     
     // Get connections where this port is the destination
-    for (const [sourceKey, destSet] of this.connectionsBySourceKey.entries()) {
+    // Convert entries to array first to avoid iteration issues
+    const entries = Array.from(this.connectionsBySourceKey.entries());
+    for (const [sourceKey, destSet] of entries) {
       if (destSet.has(portKey)) {
         const connection = this.getConnection(sourceKey, portKey);
         if (connection) connections.push(connection);
@@ -275,15 +277,21 @@ export interface INetwork<Name extends string = string, A extends IAgent = IAgen
   connectPorts: <
     P1 extends IBoundPort = IBoundPort,
     P2 extends IBoundPort = IBoundPort
-  >(port1: P1, port2: P2, connectionName?: string) => IConnection<string, P1["agent"], P2["agent"], P1, P2> | undefined;
+  >(port1: P1, port2: P2, connectionName?: string) => IConnection<string, P1["agent"], P2["agent"], any, any> | undefined;
   disconnectPorts: <
     P1 extends IBoundPort = IBoundPort,
     P2 extends IBoundPort = IBoundPort
   >(port1: P1, port2: P2) => boolean;
   isPortConnected: <P extends IBoundPort = IBoundPort>(port: P) => boolean; // New method to check if port is connected
+  getAllConnections: () => IConnection[]; // New method to get all connections
+  findConnections: (query?: { from?: IBoundPort, to?: IBoundPort }) => IConnection[]; // New method to find connections
 
   // Rule Management
   addRule: (rule: AnyRule) => void;
+  removeRule: (rule: AnyRule | string) => boolean; // Remove rule by object or name
+  getAllRules: () => AnyRule[]; // Get all rules
+  findRules: (query?: { name?: string; type?: string; agentName?: string; portName?: string }) => AnyRule[]; // Find rules by criteria
+  clearRules: () => void; // Clear all rules
 
   // Execution
   step: () => boolean;
@@ -372,7 +380,7 @@ export function Network<
           agentName2: destination.name,
           portName2: destPort.name
         },
-        action: (agent1, agent2, network) => legacyRule.action(agent1, agent2, network)
+        action: (agent1, agent2, network) => legacyRule.action(agent1, agent2, network as any)
       };
       
       // Get type IDs for faster rule matching
@@ -661,7 +669,9 @@ export function Network<
     
     // Fall back to traditional filtering
     const result: IAgent[] = [];
-    for (const agent of state.agents.values()) {
+    // Convert to array first to avoid iteration issues
+    const agents = Array.from(state.agents.values());
+    for (const agent of agents) {
       if (query.name && agent.name !== query.name) continue;
       result.push(agent);
     }
@@ -708,7 +718,7 @@ export function Network<
     // Add to optimized graph structure
     state.optimizedGraph?.addConnection(connection);
     
-    return connection;
+    return connection as any;
   }
 
   // Disconnect two ports with optimized handling
@@ -749,7 +759,7 @@ export function Network<
     }> = [];
     
     // Create a copy of active pairs to iterate over
-    const currentActivePairs = new Set(state.activePairs);
+    const currentActivePairs = Array.from(state.activePairs);
     
     // First phase: Find all applicable reductions
     for (const pairKey of currentActivePairs) {
@@ -848,6 +858,163 @@ export function Network<
     return state.portConnectivity.has(portKey);
   }
 
+  // Get all connections in the network
+  function getAllConnections(): IConnection[] {
+    const connections: IConnection[] = [];
+    const processedPairs = new Set<string>();
+
+    // Iterate through port connectivity to recreate connections
+    // Convert entries to array first to avoid iteration issues
+    const entries = Array.from(state.portConnectivity.entries());
+    for (const [port1Key, port2Key] of entries) {
+      // Create a canonical pair key to avoid duplicates
+      const pairKey = port1Key < port2Key ? `${port1Key}-${port2Key}` : `${port2Key}-${port1Key}`;
+      
+      if (processedPairs.has(pairKey)) continue;
+      processedPairs.add(pairKey);
+
+      const port1 = getPortInstance(port1Key);
+      const port2 = getPortInstance(port2Key);
+
+      if (port1 && port2) {
+        const connection = Connection(port1, port2);
+        connections.push(connection);
+      }
+    }
+
+    return connections;
+  }
+
+  // Find connections matching the query
+  function findConnections(query?: { from?: IBoundPort, to?: IBoundPort }): IConnection[] {
+    if (!query) {
+      return getAllConnections();
+    }
+
+    const connections: IConnection[] = [];
+    const processedPairs = new Set<string>();
+
+    // Convert entries to array first to avoid iteration issues
+    const entries = Array.from(state.portConnectivity.entries());
+    for (const [port1Key, port2Key] of entries) {
+      const pairKey = port1Key < port2Key ? `${port1Key}-${port2Key}` : `${port2Key}-${port1Key}`;
+      
+      if (processedPairs.has(pairKey)) continue;
+      processedPairs.add(pairKey);
+
+      const port1 = getPortInstance(port1Key);
+      const port2 = getPortInstance(port2Key);
+
+      if (!port1 || !port2) continue;
+
+      // Check if this connection matches the query
+      let matches = true;
+
+      if (query.from) {
+        const fromKey = getPortInstanceKey(query.from);
+        if (port1Key !== fromKey && port2Key !== fromKey) {
+          matches = false;
+        }
+      }
+
+      if (query.to && matches) {
+        const toKey = getPortInstanceKey(query.to);
+        if (port1Key !== toKey && port2Key !== toKey) {
+          matches = false;
+        }
+      }
+
+      if (matches) {
+        const connection = Connection(port1, port2);
+        connections.push(connection);
+      }
+    }
+
+    return connections;
+  }
+
+  // Remove a rule from the network
+  function removeRuleInternal(ruleOrName: AnyRule | string): boolean {
+    if (typeof ruleOrName === 'string') {
+      // Remove by name - search through all rules
+      // Convert entries to array first to avoid iteration issues
+      const entries = Array.from(state.rules.entries());
+      for (const [key, rule] of entries) {
+        if (rule.name === ruleOrName) {
+          state.rules.delete(key);
+          ruleResolutionCache.clear();
+          return true;
+        }
+      }
+      return false;
+    } else {
+      // Remove by rule object
+      const rule = ruleOrName;
+      if (rule.type === 'action' || rule.type === 'rewrite') {
+        const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
+        const ruleKey = getRuleLookupKey(agentName1, portName1, agentName2, portName2);
+        
+        if (state.rules.has(ruleKey) && state.rules.get(ruleKey) === rule) {
+          state.rules.delete(ruleKey);
+          ruleResolutionCache.clear();
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  // Get all rules
+  function getAllRulesInternal(): AnyRule[] {
+    return Array.from(state.rules.values());
+  }
+
+  // Find rules by criteria
+  function findRulesInternal(query: { name?: string; type?: string; agentName?: string; portName?: string } = {}): AnyRule[] {
+    const results: AnyRule[] = [];
+    
+    // Convert values to array first to avoid iteration issues
+    const rules = Array.from(state.rules.values());
+    for (const rule of rules) {
+      // Check name match
+      if (query.name && rule.name !== query.name) {
+        continue;
+      }
+      
+      // Check type match
+      if (query.type && rule.type !== query.type) {
+        continue;
+      }
+      
+      // Check agent/port matches for action and rewrite rules
+      if (rule.type === 'action' || rule.type === 'rewrite') {
+        const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
+        
+        if (query.agentName) {
+          if (agentName1 !== query.agentName && agentName2 !== query.agentName) {
+            continue;
+          }
+        }
+        
+        if (query.portName) {
+          if (portName1 !== query.portName && portName2 !== query.portName) {
+            continue;
+          }
+        }
+      }
+      
+      results.push(rule);
+    }
+    
+    return results;
+  }
+
+  // Clear all rules
+  function clearRulesInternal(): void {
+    state.rules.clear();
+    ruleResolutionCache.clear();
+  }
+
   // Create the network object
   const network = {
     name,
@@ -860,7 +1027,13 @@ export function Network<
     connectPorts,
     disconnectPorts,
     isPortConnected,
+    getAllConnections,
+    findConnections,
     addRule: addRuleInternal,
+    removeRule: removeRuleInternal,
+    getAllRules: getAllRulesInternal,
+    findRules: findRulesInternal,
+    clearRules: clearRulesInternal,
     step,
     reduce,
     getChangeHistory

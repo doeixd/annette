@@ -1,120 +1,104 @@
 /**
  * Annette Standard Library
- * 
- * This module represents the standard library abstraction layer of Annette,
- * providing common agents, rules, and patterns that build upon the core engine.
  */
-import { Core, IAgent, INetwork } from './core';
-import { ReactiveAgent, createReactive, createComputed, createEffect } from './reactive-agent';
+import { Core, INetwork, /* IAgent is used in INetwork<S,A> type constraints */ } from './core';
+// Make sure this path and exports are correct
+import { ReactiveAgent, createReactive, createComputed, createEffect } from './reactive-agent'; 
 import { 
   TimeTravelPlugin, ReactivityPlugin, SynchronizationPlugin, EffectPlugin,
-  createPluginNetwork, IPlugin, IPluginManager, EventType 
+  createPluginNetwork, IPlugin, IPluginManager, EventType, IPluginNetwork // Assuming IPluginNetwork extends INetwork
 } from './plugin';
 
-// Import individual feature modules
 import { 
-  TimeTravelNetwork, enableTimeTravel, 
+  TimeTravelNetwork as TTNetworkClass, // Alias if TimeTravelNetwork is also a type
+  enableTimeTravel, 
   NetworkSnapshot, AgentState, ConnectionState, TimeTravelManager 
 } from './timetravel';
 
 import {
-  Updater, UpdaterValue, UpdateOperation,
+  Updater as UpdaterClass, // Alias if Updater is also a type
+  UpdaterValue, UpdateOperation,
   Updates, applyUpdate, registerUpdaterRules
 } from './updater';
 
 import {
-  EffectAgent as EffectAgentBase, HandlerAgent, ResultAgent, ErrorResultAgent,
+  EffectAgent as EffectAgentBase, HandlerAgent as HandlerAgentClass, ResultAgent as ResultAgentClass, ErrorResultAgent as ErrorResultAgentClass,
   EffectDescription, EffectHandler, EffectHandlers, EffectStatus,
   EffectAgentValue, HandlerAgentValue, ResultAgentValue,
-  registerEffectRules, ResultScanner, Constructor
+  registerEffectRules, ResultScanner as ResultScannerClass, Constructor as ConstructorClass
 } from './effect';
 
 import {
-  SyncAgent, RemoteAgent, SyncNetwork,
+  SyncAgent as SyncAgentClass, RemoteAgent as RemoteAgentClass, SyncNetwork as SyncNetworkClass,
   SyncOperation, SyncAgentValue, RemoteAgentValue,
-  applyRemoteOperations, collectSyncOperations,
-  createSyncOperation, serializeAgent, serializeChange,
+  applyRemoteOperations, /* collectSyncOperations, // Marked as unused */
+  createSyncOperation, /* serializeAgent, serializeChange, // Marked as unused */
   registerSyncRules
 } from './sync';
 
 import {
-  ConnectionHistoryManager, ConnectionHistoryEntry, ConnectionStatus,
+  ConnectionHistoryManager as CHManagerClass, ConnectionHistoryEntry, ConnectionStatus,
   ReductionSnapshot, VersionedChange, enableConnectionHistory
 } from './connection-history';
 
 import {
-  MapUpdater, ListUpdater, TextUpdater, CounterUpdater,
+  MapUpdater as MapUpdaterFn, ListUpdater as ListUpdaterFn, TextUpdater as TextUpdaterFn, CounterUpdater as CounterUpdaterFn,
   createSharedMap, createSharedList, createSharedText, createSharedCounter,
-  registerSpecializedUpdaterRules, createTextCRDTOperation,
-  SpecializedUpdaterValue, DataType, MapOperation, ListOperation,
-  TextOperation, CounterOperation
+  registerSpecializedUpdaterRules, /* createTextCRDTOperation, // Marked as unused */
+  SpecializedUpdaterValue, DataType,
+  MapOperationDescriptor, ListOperationDescriptor, TextOperationDescriptor, CounterOperationDescriptor
 } from './specialized-updaters';
 
 /**
  * Standard library namespace providing common patterns and utilities
  */
 export const StdLib = {
-  // Time Travel system
   TimeTravel: {
     enableTimeTravel,
-    TimeTravelNetwork,
+    TimeTravelNetwork: TTNetworkClass,
     TimeTravelManager
   },
-  
-  // Updater system
   Updater: {
-    Updater,
+    Updater: UpdaterClass,
     applyUpdate,
     registerUpdaterRules
   },
-  
-  // Effect system
   Effect: {
     EffectAgent: EffectAgentBase,
-    HandlerAgent,
-    ResultAgent,
-    ResultScanner,
+    HandlerAgent: HandlerAgentClass,
+    ResultAgent: ResultAgentClass,
+    ResultScanner: ResultScannerClass,
     registerEffectRules
   },
-  
-  // Sync system
   Sync: {
-    SyncAgent,
-    RemoteAgent,
-    SyncNetwork,
+    SyncAgent: SyncAgentClass,
+    RemoteAgent: RemoteAgentClass,
+    SyncNetwork: SyncNetworkClass,
     registerSyncRules,
     createSyncOperation,
     applyRemoteOperations
   },
-  
-  // Connection History system
   History: {
     enableConnectionHistory,
-    ConnectionHistoryManager
+    ConnectionHistoryManager: CHManagerClass
   },
-  
-  // Specialized Updaters
   DataStructures: {
     createSharedMap,
     createSharedList,
     createSharedText,
     createSharedCounter,
-    MapUpdater,
-    ListUpdater,
-    TextUpdater,
-    CounterUpdater,
+    MapUpdater: MapUpdaterFn,
+    ListUpdater: ListUpdaterFn,
+    TextUpdater: TextUpdaterFn,
+    CounterUpdater: CounterUpdaterFn,
     registerSpecializedUpdaterRules
   },
-  
-  // Reactive system
   Reactive: {
     ReactiveAgent,
     createReactive,
     createComputed,
     createEffect
   },
-  
-  // Plugin system
   Plugin: {
     createPluginNetwork,
     TimeTravelPlugin,
@@ -123,20 +107,19 @@ export const StdLib = {
     EffectPlugin
   },
   
-  /**
-   * Create a fully-featured network with all standard features enabled
-   */
-  createEnhancedNetwork(name: string): INetwork {
-    // Create a plugin network
-    const network = createPluginNetwork(name);
+  createEnhancedNetwork(name: string): IPluginNetwork { // Return IPluginNetwork
+    // Assuming createPluginNetwork's first param is name, second is optional plugins
+    // If createPluginNetwork(initialPlugins: IPlugin[], name: string) then:
+    // const network = createPluginNetwork([], name);
+    const network = createPluginNetwork([],name); // This assumes signature (name: string, plugins?: IPlugin[])
     
-    // Register standard plugins
+    // Ensure 'network' is assignable to INetwork for these calls
+    // This requires IPluginNetwork to extend INetwork, and PluginNetwork to implement it.
     network.registerPlugin(new TimeTravelPlugin());
     network.registerPlugin(new ReactivityPlugin());
     network.registerPlugin(new SynchronizationPlugin());
     network.registerPlugin(new EffectPlugin());
     
-    // Register standard rules
     registerUpdaterRules(network);
     registerEffectRules(network);
     registerSyncRules(network);
@@ -145,9 +128,6 @@ export const StdLib = {
     return network;
   },
   
-  /**
-   * Create a minimal network with only core features
-   */
   createMinimalNetwork(name: string): INetwork {
     return Core.createNetwork(name);
   }
@@ -158,23 +138,21 @@ export const StdLib = {
  */
 export type {
   // Time Travel types
-  TimeTravelNetwork,
+  TTNetworkClass as TimeTravelNetwork, // Use alias if it's a class
   NetworkSnapshot,
   AgentState, 
   ConnectionState,
   TimeTravelManager,
   
-  // Updater types
-  Updater,
+  UpdaterClass as Updater,
   UpdaterValue,
   UpdateOperation,
-  Updates,
-  
-  // Effect types
+  // Updates, // This is an object with static methods
+
   EffectAgentBase as EffectAgent,
-  HandlerAgent,
-  ResultAgent,
-  ErrorResultAgent,
+  HandlerAgentClass as HandlerAgent,
+  ResultAgentClass as ResultAgent,
+  ErrorResultAgentClass as ErrorResultAgent,
   EffectDescription,
   EffectHandler,
   EffectHandlers,
@@ -182,40 +160,37 @@ export type {
   EffectAgentValue,
   HandlerAgentValue,
   ResultAgentValue,
-  ResultScanner,
-  Constructor,
+  ResultScannerClass as ResultScanner,
+  ConstructorClass as Constructor,
   
-  // Sync types
-  SyncAgent,
-  RemoteAgent,
-  SyncNetwork,
+  SyncAgentClass as SyncAgent,
+  RemoteAgentClass as RemoteAgent,
+  SyncNetworkClass as SyncNetwork,
   SyncOperation,
   SyncAgentValue,
   RemoteAgentValue,
   
-  // Connection History types
-  ConnectionHistoryManager,
+  CHManagerClass as ConnectionHistoryManager,
   ConnectionHistoryEntry,
   ConnectionStatus,
   ReductionSnapshot,
   VersionedChange,
   
   // Specialized Updaters types
-  MapUpdater,
-  ListUpdater,
-  TextUpdater,
-  CounterUpdater,
+  // The MapUpdaterFn etc. are functions. If their return types (IAgent<...>) are what you want to export,
+  // you might not need to re-export the function names themselves as types.
+  // However, IAgent is already generic.
   SpecializedUpdaterValue,
   DataType,
-  MapOperation,
-  ListOperation,
-  TextOperation,
-  CounterOperation,
+  MapOperationDescriptor,
+  ListOperationDescriptor,
+  TextOperationDescriptor,
+  CounterOperationDescriptor,
   
-  // Plugin types
   IPlugin,
   IPluginManager,
-  EventType
+  EventType,
+  IPluginNetwork
 };
 
 export default StdLib;

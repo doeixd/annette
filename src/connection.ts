@@ -11,23 +11,26 @@ import {
 } from "./port";
 
 export interface IConnection<
-  in out Name extends string = string,
-  in out Source extends IAgent<string, any> = IAgent,
-  in out Destination extends IAgent<string, any> = IAgent,
-  in out SourcePort extends
-    Source["ports"][keyof Source["ports"]] = Source["ports"][keyof Source["ports"]],
-  in out DestinationPort extends
-    Destination["ports"][keyof Destination["ports"]] = Destination["ports"][keyof Destination["ports"]],
+  Name extends string = string,
+  Source extends IAgent = IAgent,
+  Destination extends IAgent = IAgent,
+  SourcePort extends Source["ports"][keyof Source["ports"]] = Source["ports"][keyof Source["ports"]],
+  DestPort extends Destination["ports"][keyof Destination["ports"]] = Destination["ports"][keyof Destination["ports"]]
 > {
   name: Name;
-
   source: Source;
-  sourcePort: SourcePort;
-  sourcePortKey: PortInstanceKey;
-
   destination: Destination;
-  destinationPort: DestinationPort;
-  destinationPortKey: PortInstanceKey;
+  sourcePort: SourcePort;
+  destinationPort: DestPort;
+ sourcePortKey?: PortInstanceKey;
+ destinationPortKey?: PortInstanceKey;
+}
+
+export function getConnectionKeys(connection: IConnection): [PortInstanceKey, PortInstanceKey] {
+  return [
+    getPortInstanceKey(connection.sourcePort),
+    getPortInstanceKey(connection.destinationPort)
+  ];
 }
 
 export function isConnection(arg: any): arg is IConnection {

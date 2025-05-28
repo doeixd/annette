@@ -16,8 +16,9 @@
     "moduleResolution": "bundler",
     "jsx": "react",
     "esModuleInterop": true,
-    "target": "es2018",
+    "target": "es2020",
     "useDefineForClassFields": false,
-    "declarationMap": true
+    "declarationMap": true,
+    "downlevelIteration": true
   }
 }

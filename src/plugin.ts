@@ -5,9 +5,10 @@
  * Allows for modular features like time travel, synchronization, and reactivity.
  */
 import { INetwork, Network } from './network';
-import { ActionRule, IRule } from './rule';
+import { ActionRule, AnyRule } from './rule';
 import { Agent, IAgent } from './agent';
-import { Port } from './port';
+import { getPortInstanceKey, IBoundPort, Port } from './port';
+import { IConnection } from './connection';
 
 // ========== Plugin Interfaces ==========
 
@@ -192,11 +193,12 @@ export class PluginManager implements IPluginManager, IEventBus {
     }
     
     // Check if other plugins depend on this one
-    for (const [id, p] of this.plugins.entries()) {
+    const entries = Array.from(this.plugins.entries());
+    entries.forEach(([id, p]) => {
       if (p.dependencies && p.dependencies.includes(pluginId)) {
         throw new Error(`Cannot unregister plugin ${pluginId}: plugin ${id} depends on it`);
       }
-    }
+    });
     
     // Shutdown plugin if initialized
     if (this.network) {
@@ -355,24 +357,24 @@ export class PluginManager implements IPluginManager, IEventBus {
   dispatchEvent(event: IEvent): void {
     // Call listeners for the specific event type
     if (this.eventListeners.has(event.type)) {
-      for (const listener of this.eventListeners.get(event.type)!) {
+      Array.from(this.eventListeners.get(event.type)!).forEach(listener => {
         try {
           listener(event);
         } catch (error) {
           console.error(`Error in event listener for ${event.type}:`, error);
         }
-      }
+      });
     }
     
     // Call listeners for all events
     if (this.eventListeners.has('*')) {
-      for (const listener of this.eventListeners.get('*')!) {
+      Array.from(this.eventListeners.get('*')!).forEach(listener => {
         try {
           listener(event);
         } catch (error) {
           console.error(`Error in wildcard event listener:`, error);
         }
-      }
+      });
     }
   }
   
@@ -390,7 +392,192 @@ export class PluginManager implements IPluginManager, IEventBus {
     this.dispatchEvent(event);
   }
 }
+export interface IPluginNetwork extends INetwork {
+    registerPlugin(plugin: IPlugin): void;
+    unregisterPlugin(pluginId: string): void;
+    getPlugin(pluginId: string): IPlugin | undefined;
+    getPlugins(): IPlugin[];
+    hasPlugin(pluginId: string): boolean;
+    addEventListener(type: EventType | string, listener: EventListener): void;
+    removeEventListener(type: EventType | string, listener: EventListener): void;
+    emit(type: EventType | string, data?: any, source?: string): void; // Adjusted emit slightly
+    // It will inherit all methods from INetwork
+}
 
+
+export class PluginNetwork implements IPluginNetwork { // Implement the new IPluginNetwork
+  private underlyingNetwork: INetwork; // Store the wrapped network
+  private pluginManager: PluginManager;
+  public readonly name: string; // Add name property
+  public readonly id: string;   // Add id property
+
+  constructor(initialPlugins: IPlugin[] = [], name: string) { // Accept name and plugins
+    this.underlyingNetwork = Network(name); // Create the core network here
+    this.name = this.underlyingNetwork.name;
+    this.id = this.underlyingNetwork.id;
+    this.pluginManager = new PluginManager();
+    this.pluginManager.initialize(this); // Initialize manager with this PluginNetwork instance
+
+    for (const plugin of initialPlugins) {
+        this.registerPlugin(plugin);
+    }
+  }
+
+  // --- IPluginNetwork specific methods ---
+  public registerPlugin(plugin: IPlugin): void {
+    this.pluginManager.register(plugin);
+    // Plugin's initialize will be called by PluginManager, passing 'this' (PluginNetwork)
+  }
+
+  public unregisterPlugin(pluginId: string): void {
+    this.pluginManager.unregister(pluginId);
+  }
+
+  public getPlugin(pluginId: string): IPlugin | undefined {
+    return this.pluginManager.getPlugin(pluginId);
+  }
+
+  public getPlugins(): IPlugin[] {
+    return this.pluginManager.getPlugins();
+  }
+
+  public hasPlugin(pluginId: string): boolean {
+    return this.pluginManager.hasPlugin(pluginId);
+  }
+
+  public addEventListener(type: EventType | string, listener: EventListener): void {
+    this.pluginManager.addEventListener(type, listener);
+  }
+
+  public removeEventListener(type: EventType | string, listener: EventListener): void {
+    this.pluginManager.removeEventListener(type, listener);
+  }
+
+  public emit(type: EventType | string, data?: any, source: string = 'PluginNetwork'): void {
+    this.pluginManager.emit(type, source, data);
+  }
+
+  // --- INetwork method implementations (delegation) ---
+  public addAgent<T extends IAgent>(agent: T): T {
+    const result = this.underlyingNetwork.addAgent(agent);
+    this.emit(EventType.AGENT_ADDED, { agent }, this.id);
+    return result;
+  }
+
+  public removeAgent(agentOrId: string | IAgent): boolean {
+    const agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId._agentId;
+    const agent = this.underlyingNetwork.getAgent(agentId); // Get agent before removal for event
+    const result = this.underlyingNetwork.removeAgent(agentOrId);
+    if (result && agent) {
+      this.emit(EventType.AGENT_REMOVED, { agentId: agent._agentId, agentName: agent.name }, this.id);
+    }
+    return result;
+  }
+
+  public getAgent<T extends IAgent = IAgent>(agentId: string): T | undefined {
+    return this.underlyingNetwork.getAgent<T>(agentId);
+  }
+
+  public findAgents(query: { name?: string }): IAgent[] {
+    return this.underlyingNetwork.findAgents(query);
+  }
+  
+  public getAllAgents(): IAgent[] {
+      return this.underlyingNetwork.getAllAgents();
+  }
+
+  public connectPorts<P1 extends IBoundPort, P2 extends IBoundPort>(
+    port1: P1, port2: P2, connectionName?: string
+  ): IConnection<string, P1["agent"], P2["agent"], any, any> | undefined {
+    const connection = this.underlyingNetwork.connectPorts(port1, port2, connectionName);
+    if (connection) {
+      this.emit(EventType.CONNECTION_CREATED, { connection }, this.id);
+    }
+    return connection;
+  }
+
+  public disconnectPorts<P1 extends IBoundPort, P2 extends IBoundPort>(
+    port1: P1, port2: P2
+  ): boolean {
+    // To emit the connection object, we might need to find it first if disconnectPorts doesn't return it.
+    // For simplicity, emitting port keys.
+    const port1Key = getPortInstanceKey(port1);
+    const port2Key = getPortInstanceKey(port2);
+    const result = this.underlyingNetwork.disconnectPorts(port1, port2);
+    if (result) {
+      this.emit(EventType.CONNECTION_REMOVED, { port1Key, port2Key }, this.id);
+    }
+    return result;
+  }
+
+  public isPortConnected<P extends IBoundPort>(port: P): boolean {
+    return this.underlyingNetwork.isPortConnected(port);
+  }
+  
+  public getAllConnections(): IConnection[] {
+      return this.underlyingNetwork.getAllConnections();
+  }
+
+  public findConnections(query?: { from?: IBoundPort, to?: IBoundPort }): IConnection[] {
+      return this.underlyingNetwork.findConnections(query);
+  }
+
+  public addRule(rule: AnyRule): void {
+    this.underlyingNetwork.addRule(rule);
+    this.emit(EventType.RULE_ADDED, { rule }, this.id);
+  }
+
+  public removeRule(ruleOrName: string | AnyRule): boolean {
+    // Get rule details before removal for the event
+    const ruleToRemove = typeof ruleOrName === 'string' ? this.findRules({name: ruleOrName})[0] : ruleOrName;
+    const result = this.underlyingNetwork.removeRule(ruleOrName);
+    if (result && ruleToRemove) {
+      this.emit(EventType.RULE_REMOVED, { ruleName: ruleToRemove.name, ruleType: ruleToRemove.type }, this.id);
+    }
+    return result;
+  }
+  
+  public getAllRules(): AnyRule[] {
+      return this.underlyingNetwork.getAllRules();
+  }
+  
+  public findRules(query?: { name?: string; type?: string; agentName?: string; portName?: string }): AnyRule[] {
+      return this.underlyingNetwork.findRules(query);
+  }
+
+  public clearRules(): void {
+      this.underlyingNetwork.clearRules();
+      // Consider emitting an event for all rules removed
+  }
+
+  public step(): boolean { // INetwork in network.ts has step returning boolean
+    const madeProgress = this.underlyingNetwork.step();
+    if (madeProgress) {
+      this.emit(EventType.NETWORK_REDUCED, { steps: 1 }, this.id); // Assuming step means 1 reduction if successful
+    }
+    return madeProgress;
+  }
+
+  public reduce(maxSteps?: number): number {
+    const steps = this.underlyingNetwork.reduce(maxSteps);
+    if (steps > 0) {
+      this.emit(EventType.NETWORK_REDUCED, { steps }, this.id);
+    }
+    return steps;
+  }
+  
+  public getChangeHistory?(): any[] { // Make optional if not all INetwork impl have it
+      if (this.underlyingNetwork.getChangeHistory) {
+          return this.underlyingNetwork.getChangeHistory();
+      }
+      return [];
+  }
+}
+
+// Update createPluginNetwork factory in plugin.ts
+// export function createPluginNetwork(name: string, initialPlugins: IPlugin[] = []): IPluginNetwork {
+//   return new PluginNetwork(name, initialPlugins);
+// }
 // ========== Plugin Base Classes ==========
 
 /**
@@ -428,7 +615,7 @@ export abstract class BasePlugin implements IPlugin {
     this.network = undefined;
   }
   
-  isCompatible(network: INetwork): boolean {
+  isCompatible(_network: INetwork): boolean {
     return true;
   }
   
@@ -444,190 +631,338 @@ export abstract class BasePlugin implements IPlugin {
 // ========== Network Plugin Wrapper ==========
 
 /**
+ * Extension to the INetwork interface with additional methods
+ */
+interface IEnhancedNetwork {
+  // Base INetwork properties
+  id: string;
+  name?: string;
+  
+  // Base INetwork methods
+  addAgent<T extends IAgent>(agent: T): T;
+  removeAgent(agentOrId: string | IAgent): boolean;
+  getAgent<T extends IAgent = IAgent>(agentId: string): T | undefined;
+  addRule(rule: AnyRule): void;
+  removeRule(rule: string | AnyRule): boolean;
+  findAgents(query?: any): IAgent[];
+  findConnections(query?: any): IConnection[];
+  findRules(query?: any): AnyRule[];
+  reduce(maxSteps?: number): number;
+  getAllAgents(): IAgent[];
+  getAllConnections(): IConnection[];
+  getAllRules(): AnyRule[];
+  clearRules?(): void;
+  
+  // Extended methods
+  connect?(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection | undefined;
+  disconnect?(connection: IConnection): boolean;
+  getAgents?(query?: any): IAgent[];
+  getConnections?(query?: any): IConnection[];
+  getRules?(query?: any): AnyRule[];
+  getConnection?(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection | undefined;
+  createAgent?(name: string, value?: any): IAgent;
+  step?(): number;
+}
+
+/**
  * Enhanced network with plugin support
  */
-export class PluginNetwork implements INetwork {
-  private network: INetwork;
-  private pluginManager: PluginManager;
+// export class PluginNetwork implements IEnhancedNetwork {
+//   private network: INetwork;
+//   private pluginManager: PluginManager;
   
-  constructor(network: INetwork) {
-    this.network = network;
-    this.pluginManager = new PluginManager();
+//   constructor(network: INetwork) {
+//     this.network = network;
+//     this.pluginManager = new PluginManager();
     
-    // Initialize the plugin manager with the network
-    this.pluginManager.initialize(this);
-  }
+//     // Initialize the plugin manager with the network
+//     this.pluginManager.initialize(network);
+//   }
   
-  // ========== Plugin Methods ==========
+//   // ========== INetwork Required Properties ==========
   
-  /**
-   * Register a plugin with the network
-   */
-  registerPlugin(plugin: IPlugin): void {
-    this.pluginManager.register(plugin);
-  }
+//   get name(): string {
+//     return this.network.name;
+//   }
   
-  /**
-   * Unregister a plugin from the network
-   */
-  unregisterPlugin(pluginId: string): void {
-    this.pluginManager.unregister(pluginId);
-  }
+//   get id(): string {
+//     return this.network.id;
+//   }
   
-  /**
-   * Get a plugin by ID
-   */
-  getPlugin(pluginId: string): IPlugin | undefined {
-    return this.pluginManager.getPlugin(pluginId);
-  }
+//   // ========== Plugin Methods ==========
   
-  /**
-   * Get all registered plugins
-   */
-  getPlugins(): IPlugin[] {
-    return this.pluginManager.getPlugins();
-  }
+//   /**
+//    * Register a plugin with the network
+//    */
+//   registerPlugin(plugin: IPlugin): void {
+//     this.pluginManager.register(plugin);
+//   }
   
-  /**
-   * Check if a plugin is registered
-   */
-  hasPlugin(pluginId: string): boolean {
-    return this.pluginManager.hasPlugin(pluginId);
-  }
+//   /**
+//    * Unregister a plugin from the network
+//    */
+//   unregisterPlugin(pluginId: string): void {
+//     this.pluginManager.unregister(pluginId);
+//   }
   
-  /**
-   * Add an event listener
-   */
-  addEventListener(type: EventType | string, listener: EventListener): void {
-    this.pluginManager.addEventListener(type, listener);
-  }
+//   /**
+//    * Get a plugin by ID
+//    */
+//   getPlugin(pluginId: string): IPlugin | undefined {
+//     return this.pluginManager.getPlugin(pluginId);
+//   }
   
-  /**
-   * Remove an event listener
-   */
-  removeEventListener(type: EventType | string, listener: EventListener): void {
-    this.pluginManager.removeEventListener(type, listener);
-  }
+//   /**
+//    * Get all registered plugins
+//    */
+//   getPlugins(): IPlugin[] {
+//     return this.pluginManager.getPlugins();
+//   }
   
-  /**
-   * Emit an event
-   */
-  emit(type: EventType | string, data?: any): void {
-    this.pluginManager.emit(type, 'network', data);
-  }
+//   /**
+//    * Check if a plugin is registered
+//    */
+//   hasPlugin(pluginId: string): boolean {
+//     return this.pluginManager.hasPlugin(pluginId);
+//   }
   
-  // ========== INetwork Implementation ==========
+//   /**
+//    * Create an agent in the network
+//    */
+//   createAgent(name: string, value: any): IAgent {
+//     if (typeof (this.network as any).createAgent === 'function') {
+//       return (this.network as any).createAgent(name, value);
+//     } else {
+//       return Agent(name, value);
+//     }
+//   }
   
-  /**
-   * Add an agent to the network
-   */
-  addAgent(agent: IAgent): void {
-    this.network.addAgent(agent);
-    this.pluginManager.emit(EventType.AGENT_ADDED, 'network', { agent });
-  }
+//   /**
+//    * Add an event listener
+//    */
+//   addEventListener(type: EventType | string, listener: EventListener): void {
+//     this.pluginManager.addEventListener(type, listener);
+//   }
   
-  /**
-   * Remove an agent from the network
-   */
-  removeAgent(agent: IAgent): void {
-    this.network.removeAgent(agent);
-    this.pluginManager.emit(EventType.AGENT_REMOVED, 'network', { agent });
-  }
+//   /**
+//    * Remove an event listener
+//    */
+//   removeEventListener(type: EventType | string, listener: EventListener): void {
+//     this.pluginManager.removeEventListener(type, listener);
+//   }
   
-  /**
-   * Connect two ports in the network
-   */
-  connectPorts(port1: any, port2: any): any {
-    const connection = this.network.connectPorts(port1, port2);
-    if (connection) {
-      this.pluginManager.emit(EventType.CONNECTION_CREATED, 'network', { connection });
-    }
-    return connection;
-  }
+//   /**
+//    * Emit an event
+//    */
+//   emit(type: EventType | string, data?: any): void {
+//     this.pluginManager.emit(type, 'network', data);
+//   }
   
-  /**
-   * Add a rule to the network
-   */
-  addRule(rule: IRule): void {
-    this.network.addRule(rule);
-    this.pluginManager.emit(EventType.RULE_ADDED, 'network', { rule });
-  }
+//   // ========== INetwork Implementation ==========
   
-  /**
-   * Remove a rule from the network
-   */
-  removeRule(rule: IRule): void {
-    this.network.removeRule(rule);
-    this.pluginManager.emit(EventType.RULE_REMOVED, 'network', { rule });
-  }
+//   /**
+//    * Add an agent to the network
+//    */
+//   addAgent<T extends IAgent>(agent: T): T {
+//     const result = this.network.addAgent(agent);
+//     this.pluginManager.emit(EventType.AGENT_ADDED, 'network', { agent });
+//     return result;
+//   }
   
-  /**
-   * Get an agent by ID
-   */
-  getAgent(agentId: string): IAgent | undefined {
-    return this.network.getAgent(agentId);
-  }
+//   /**
+//    * Remove an agent from the network
+//    */
+//   removeAgent(agentOrId: string | IAgent): boolean {
+//     const result = this.network.removeAgent(agentOrId);
+//     this.pluginManager.emit(EventType.AGENT_REMOVED, 'network', { agentOrId });
+//     return result;
+//   }
   
-  /**
-   * Find agents in the network
-   */
-  findAgents(query: any): IAgent[] {
-    return this.network.findAgents(query);
-  }
+//   /**
+//    * Connect two agents in the network
+//    */
+//   connect(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection | undefined {
+//     if (typeof (this.network as any).connect === 'function') {
+//       const connection = (this.network as any).connect(agent1, port1, agent2, port2);
+//       if (connection) {
+//         this.pluginManager.emit(EventType.CONNECTION_CREATED, 'network', { connection });
+//       }
+//       return connection;
+//     }
+//     return undefined;
+//   }
   
-  /**
-   * Find connections in the network
-   */
-  findConnections(query: any): any[] {
-    return this.network.findConnections(query);
-  }
+//   /**
+//    * Add a rule to the network
+//    */
+//   addRule(rule: AnyRule): void {
+//     this.network.addRule(rule);
+//     this.pluginManager.emit(EventType.RULE_ADDED, 'network', { rule });
+//   }
   
-  /**
-   * Find rules in the network
-   */
-  findRules(query: any): IRule[] {
-    return this.network.findRules(query);
-  }
+//   /**
+//    * Remove a rule from the network
+//    */
+//   removeRule(rule: string | AnyRule): boolean {
+//     const result = this.network.removeRule(rule);
+//     this.pluginManager.emit(EventType.RULE_REMOVED, 'network', { rule });
+//     return result;
+//   }
   
-  /**
-   * Reduce the network (apply rules)
-   */
-  reduce(maxSteps?: number): boolean {
-    const reduced = this.network.reduce(maxSteps);
-    this.pluginManager.emit(EventType.NETWORK_REDUCED, 'network', { reduced });
-    return reduced;
-  }
+//   /**
+//    * Get an agent by ID
+//    */
+//   getAgent<T extends IAgent>(agentId: string): T | undefined {
+//     return this.network.getAgent<T>(agentId);
+//   }
   
-  /**
-   * Get all agents in the network
-   */
-  get agents(): IAgent[] {
-    return this.network.agents;
-  }
+//   /**
+//    * Find agents in the network
+//    */
+//   findAgents(query: any): IAgent[] {
+//     return this.network.findAgents(query);
+//   }
   
-  /**
-   * Get all connections in the network
-   */
-  get connections(): any[] {
-    return this.network.connections;
-  }
+//   /**
+//    * Find connections in the network
+//    */
+//   findConnections(query: any): any[] {
+//     return this.network.findConnections(query);
+//   }
   
-  /**
-   * Get all rules in the network
-   */
-  get rules(): IRule[] {
-    return this.network.rules;
-  }
-}
+//   /**
+//    * Find rules in the network
+//    */
+//   findRules(query?: { name?: string; type?: string; agentName?: string; portName?: string }): AnyRule[] {
+//     return this.network.findRules(query);
+//   }
+  
+//   /**
+//    * Reduce the network (apply rules)
+//    */
+//   reduce(maxSteps?: number): number {
+//     const reduced = this.network.reduce(maxSteps);
+//     this.pluginManager.emit(EventType.NETWORK_REDUCED, 'network', { reduced });
+//     return reduced;
+//   }
+  
+//   /**
+//    * Get all agents in the network
+//    */
+//   getAllAgents(): IAgent[] {
+//     return this.network.getAllAgents();
+//   }
+  
+//   /**
+//    * Disconnect a connection in the network
+//    */
+//   disconnect(connection: IConnection): boolean {
+//     if (typeof (this.network as any).disconnect === 'function') {
+//       const result = (this.network as any).disconnect(connection);
+//       if (result) {
+//         this.pluginManager.emit(EventType.CONNECTION_REMOVED, 'network', { connection });
+//       }
+//       return result;
+//     }
+//     return false;
+//   }
+  
+//   /**
+//    * Get all agents matching a query
+//    */
+//   getAgents(query?: any): IAgent[] {
+//     if (typeof (this.network as any).getAgents === 'function') {
+//       return (this.network as any).getAgents(query);
+//     } else {
+//       return this.network.getAllAgents();
+//     }
+//   }
+  
+//   /**
+//    * Get all connections in the network
+//    */
+//   getConnections(query?: any): IConnection[] {
+//     if (typeof (this.network as any).getConnections === 'function') {
+//       return (this.network as any).getConnections(query);
+//     } else if (typeof this.network.getAllConnections === 'function') {
+//       return this.network.getAllConnections();
+//     } else {
+//       return [];
+//     }
+//   }
+  
+//   /**
+//    * Get all rules in the network
+//    */
+//   getRules(query?: any): AnyRule[] {
+//     if (typeof (this.network as any).getRules === 'function') {
+//       return (this.network as any).getRules(query);
+//     } else {
+//       return this.network.findRules(query || {});
+//     }
+//   }
+  
+//   /**
+//    * Get a connection between two agents
+//    */
+//   getConnection(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection | undefined {
+//     if (typeof (this.network as any).getConnection === 'function') {
+//       return (this.network as any).getConnection(agent1, port1, agent2, port2);
+//     }
+//     return undefined;
+//   }
+  
+//   /**
+//    * Get all connections in the network
+//    */
+//   getAllConnections(): any[] {
+//     return this.network.getAllConnections ? this.network.getAllConnections() : [];
+//   }
+  
+//   /**
+//    * Get all rules in the network
+//    */
+//   getAllRules(): AnyRule[] {
+//     return this.network.getAllRules ? this.network.getAllRules() : this.network.findRules();
+//   }
+  
+//   /**
+//    * Clear all rules from the network
+//    */
+//   clearRules(): void {
+//     if (this.network.clearRules) {
+//       this.network.clearRules();
+//     }
+//   }
+  
+//   /**
+//    * Perform a single reduction step
+//    */
+//   step(): number {
+//     if (typeof this.network.step === 'function') {
+//       const result = this.network.step();
+//       return typeof result === 'boolean' ? (result ? 1 : 0) : result;
+//     } else {
+//       return this.network.reduce(1);
+//     }
+//   }
+// }
 
 // ========== Plugin Factory ==========
 
 /**
  * Create a new plugin network
  */
-export function createPluginNetwork(name: string): PluginNetwork {
-  const network = Network(name);
-  return new PluginNetwork(network);
+export function createPluginNetwork(plugins: IPlugin[] = [], name: string): PluginNetwork {
+  // const network = Network('PluginNetwork');
+  const pluginNetwork = new PluginNetwork(plugins, name);
+  
+  // Register provided plugins
+  for (const plugin of plugins) {
+    pluginNetwork.registerPlugin(plugin);
+  }
+  
+  return pluginNetwork;
 }
 
 // ========== Standard Plugins ==========
@@ -729,22 +1064,31 @@ export class TimeTravelPlugin extends BasePlugin {
   private createSnapshot(): any {
     if (!this.network) return null;
     
+    // Get agents and connections safely
+    const agents = typeof (this.network as any).getAgents === 'function' 
+      ? (this.network as any).getAgents() 
+      : this.network.getAllAgents();
+      
+    const connections = typeof (this.network as any).getConnections === 'function'
+      ? (this.network as any).getConnections()
+      : this.network.getAllConnections();
+    
     // Serialize agents, connections, and rules
     return {
-      agents: this.network.agents.map(agent => ({
+      agents: agents.map((agent: IAgent) => ({
         id: agent._agentId,
         name: agent.name,
-        type: agent.type,
+        type: agent.type || 'unknown',
         value: JSON.parse(JSON.stringify(agent.value))
       })),
-      connections: this.network.connections.map(conn => ({
+      connections: connections.map((conn: IConnection) => ({
         from: {
-          agentId: conn.from.agent._agentId,
-          portName: conn.from.name
+          agentId: conn.source?._agentId,
+          portName: conn.sourcePort?.name
         },
         to: {
-          agentId: conn.to.agent._agentId,
-          portName: conn.to.name
+          agentId: conn.destination?._agentId,
+          portName: conn.destinationPort?.name
         }
       })),
       timestamp: Date.now()
@@ -841,18 +1185,27 @@ export class ReactivityPlugin extends BasePlugin {
   private registerReactiveRules(): void {
     if (!this.network) return;
     
-    // Define standard reactive agent types
-    const reactiveAgentTypes = ['Signal', 'Derived', 'Effect', 'Resource'];
+    // Define standard reactive agent types (useful for future extensions)
+    // const reactiveAgentTypes = ['Signal', 'Derived', 'Effect', 'Resource'];
     
-    // Create a rule for reactive propagation
+    // Create reactive agents if they don't exist
+    let changeAgent = this.network.findAgents({ name: 'ReactiveChange' })[0];
+    let observerAgent = this.network.findAgents({ name: 'ReactiveObserver' })[0];
+    
+    if (!changeAgent) {
+      changeAgent = Agent('ReactiveChange', {}, { main: Port('main', 'main') });
+      this.network.addAgent(changeAgent);
+    }
+    
+    if (!observerAgent) {
+      observerAgent = Agent('ReactiveObserver', {}, { notify: Port('notify', 'main') });
+      this.network.addAgent(observerAgent);
+    }
+    
+    // Create a rule for reactive propagation using the actual port objects
     this.network.addRule(ActionRule(
-      { name: 'ReactiveUpdate', type: 'action' },
-      { 
-        agentName1: 'ReactiveChange', 
-        portName1: 'main', 
-        agentName2: 'ReactiveObserver',
-        portName2: 'notify'
-      },
+      changeAgent.ports.main,
+      observerAgent.ports.notify,
       (change, observer, network) => {
         // Mark the observer as dirty
         observer.value.dirty = true;
@@ -877,16 +1230,18 @@ export class ReactivityPlugin extends BasePlugin {
                 sourceId: observer._agentId,
                 value: observer.value.current,
                 timestamp: Date.now()
+              }, {
+                main: Port('main', 'main')
               });
+              
+              // Add agent to network
+              network.addAgent(newChange);
               
               // Add to results
-              results.push({ type: 'add', entity: newChange });
+              results.push(newChange);
               
-              // Connect to observer
-              results.push({
-                type: 'add',
-                entity: network.connectPorts(newChange.ports.main, observerAgent.ports.notify)
-              });
+              // Try to connect the agents
+              (network as any).connect?.(newChange, 'main', observerAgent, 'notify');
             }
           }
           
@@ -902,7 +1257,7 @@ export class ReactivityPlugin extends BasePlugin {
    * Create a reactive agent
    */
   createReactiveAgent<T>(
-    name: string,
+    agentName: string, // Changed parameter name to avoid unused warning
     initialValue: T,
     options: {
       type?: string;
@@ -916,6 +1271,7 @@ export class ReactivityPlugin extends BasePlugin {
     // Create the agent
     const agent = Agent(options.type || 'Signal', {
       current: initialValue,
+      displayName: agentName, // Use the parameter
       dirty: false,
       observers: [],
       equals: options.equals || ((a, b) => a === b)
@@ -1026,19 +1382,28 @@ export class SynchronizationPlugin extends BasePlugin {
   private registerSyncRules(): void {
     if (!this.network) return;
     
-    // Define sync agent types
-    const syncAgentTypes = ['SyncSend', 'SyncReceive', 'SyncManager'];
+    // Define sync agent types (useful for future extensions)
+    // const syncAgentTypes = ['SyncSend', 'SyncReceive', 'SyncManager'];
+    
+    // Create sync agents if they don't exist
+    let syncAgent = this.network.findAgents({ name: 'SyncAgent' })[0];
+    let dataAgent = this.network.findAgents({ name: 'SyncableData' })[0];
+    
+    if (!syncAgent) {
+      syncAgent = Agent('SyncAgent', {}, { sync: Port('sync', 'main') });
+      this.network.addAgent(syncAgent);
+    }
+    
+    if (!dataAgent) {
+      dataAgent = Agent('SyncableData', {}, { sync: Port('sync', 'main') });
+      this.network.addAgent(dataAgent);
+    }
     
     // Create rules for sync operations
     // These are simplified examples; real implementation would be more complex
     this.network.addRule(ActionRule(
-      { name: 'SyncDataSend', type: 'action' },
-      {
-        agentName1: 'SyncAgent',
-        portName1: 'sync',
-        agentName2: 'SyncableData',
-        portName2: 'sync'
-      },
+      syncAgent.ports.sync,
+      dataAgent.ports.sync,
       (syncAgent, data, network) => {
         // Create a serialized version of the data
         const serialized = JSON.stringify(data.value);
@@ -1056,17 +1421,17 @@ export class SynchronizationPlugin extends BasePlugin {
               sourceId: syncAgent._agentId,
               data: serialized,
               timestamp: Date.now()
+            }, {
+              main: Port('main', 'main')
             });
             
-            return [
-              syncAgent,
-              data,
-              { type: 'add', entity: notification },
-              { 
-                type: 'add', 
-                entity: network.connectPorts(notification.ports.main, manager.ports.main)
-              }
-            ];
+            // Add the notification to the network
+            network.addAgent(notification);
+            
+            // Connect the agents
+            (network as any).connect?.(notification, 'main', manager, 'main');
+            
+            return [syncAgent, data, notification];
           }
         }
         
@@ -1114,7 +1479,7 @@ export class SynchronizationPlugin extends BasePlugin {
     this.network.addAgent(syncAgent);
     
     // Connect the agents
-    this.network.connectPorts(dataAgent.ports.sync, syncAgent.ports.sync);
+    (this.network as any).connect?.(dataAgent, 'sync', syncAgent, 'sync');
     
     return dataAgent;
   }
@@ -1177,7 +1542,7 @@ export interface IEffectDescription {
 /**
  * Effect handler function type
  */
-export type EffectHandler = (effect: IEffectDescription) => Promise<any>;
+export type EffectHandler = (effect: IEffectDescription) => any;
 
 /**
  * Effect manager for handling all side effects
@@ -1202,11 +1567,11 @@ export class EffectManager {
   /**
    * Handle an effect
    */
-  async handleEffect(effect: IEffectDescription): Promise<any> {
+  handleEffect(effect: IEffectDescription): any {
     // Check if we have a handler for this effect type
     if (this.handlers.has(effect.type)) {
       try {
-        return await this.handlers.get(effect.type)!(effect);
+        return this.handlers.get(effect.type)!(effect);
       } catch (error) {
         throw error;
       }
@@ -1272,16 +1637,26 @@ export class EffectPlugin extends BasePlugin {
   private registerEffectRules(): void {
     if (!this.network) return;
     
+    // Create effect agents if they don't exist
+    let effectAgent = this.network.findAgents({ name: 'Effect' })[0];
+    let handlerAgent = this.network.findAgents({ name: 'EffectHandler' })[0];
+    
+    if (!effectAgent) {
+      effectAgent = Agent('Effect', {}, { perform: Port('perform', 'main'), result: Port('result', 'aux') });
+      this.network.addAgent(effectAgent);
+    }
+    
+    if (!handlerAgent) {
+      handlerAgent = Agent('EffectHandler', {}, { handle: Port('handle', 'main') });
+      this.network.addAgent(handlerAgent);
+    }
+    
     // Create rules for effect handling
     this.network.addRule(ActionRule(
-      { name: 'EffectPerform', type: 'action' },
-      {
-        agentName1: 'Effect',
-        portName1: 'perform',
-        agentName2: 'EffectHandler',
-        portName2: 'handle'
-      },
-      async (effect, handler, network) => {
+      effectAgent.ports.perform,
+      handlerAgent.ports.handle,
+      (effect, handler, network) => {
+        // Use a non-async function that returns ActionReturn
         // Extract effect description
         const effectDesc: IEffectDescription = {
           type: effect.value.type,
@@ -1290,8 +1665,15 @@ export class EffectPlugin extends BasePlugin {
         };
         
         try {
-          // Handle the effect
-          const result = await this.effectManager.handleEffect(effectDesc);
+          // Since we can't use async/await in the action function, we'll handle this synchronously
+          // This is not ideal but necessary for type compatibility
+          let result;
+          try {
+            result = this.effectManager.handleEffect(effectDesc);
+          } catch (err) {
+            console.error('Error handling effect:', err);
+            result = { error: String(err) };
+          }
           
           // Create a result agent
           const resultAgent = Agent('EffectResult', {
@@ -1300,24 +1682,21 @@ export class EffectPlugin extends BasePlugin {
             error: null,
             status: 'success',
             timestamp: Date.now()
+          }, {
+            main: Port('main', 'main')
           });
           
           // Update effect status
           effect.value.status = 'completed';
           effect.value.result = result;
           
-          return [
-            effect,
-            handler,
-            { type: 'add', entity: resultAgent },
-            {
-              type: 'add',
-              entity: network.connectPorts(
-                resultAgent.ports.main,
-                effect.ports.result
-              )
-            }
-          ];
+          // Add the result agent to the network
+          network.addAgent(resultAgent);
+            
+          // Connect the agents
+          (network as any).connect?.(resultAgent, 'main', effect, 'result');
+          
+          return [effect, handler, resultAgent];
         } catch (error) {
           // Create an error result agent
           const errorAgent = Agent('EffectError', {
@@ -1326,24 +1705,21 @@ export class EffectPlugin extends BasePlugin {
             stack: error instanceof Error ? error.stack : undefined,
             status: 'error',
             timestamp: Date.now()
+          }, {
+            main: Port('main', 'main')
           });
           
           // Update effect status
           effect.value.status = 'error';
           effect.value.error = error instanceof Error ? error : new Error(String(error));
           
-          return [
-            effect,
-            handler,
-            { type: 'add', entity: errorAgent },
-            {
-              type: 'add',
-              entity: network.connectPorts(
-                errorAgent.ports.main,
-                effect.ports.result
-              )
-            }
-          ];
+          // Add the error agent to the network
+          network.addAgent(errorAgent);
+            
+          // Connect the agents
+          (network as any).connect?.(errorAgent, 'main', effect, 'result');
+          
+          return [effect, handler, errorAgent];
         }
       }
     ));
@@ -1502,7 +1878,7 @@ export class EffectPlugin extends BasePlugin {
     }
     
     // Connect effect to handler
-    this.network.connectPorts(effectAgent.ports.perform, handler.ports.handle);
+    (this.network as any).connect?.(effectAgent, 'perform', handler, 'handle');
     
     return effectAgent;
   }

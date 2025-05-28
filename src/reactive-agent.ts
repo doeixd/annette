@@ -403,7 +403,9 @@ function notifyObservers(agent: IAgent): void {
   const observers = agent.value.observers as Set<AgentId>;
   
   // Create notification agents for each observer
-  for (const observerId of observers) {
+  // Convert to array first to avoid iteration issues
+  const observerIds = Array.from(observers);
+  for (const observerId of observerIds) {
     const observer = network.getAgent(observerId);
     if (!observer) continue;
     
@@ -424,10 +426,16 @@ function notifyObservers(agent: IAgent): void {
  */
 function registerReactiveRules(network: INetwork): void {
   // Rule: ReactiveChangeAgent <-> ReactiveAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveChange", type: "action" },
-    { agentName1: "ReactiveChangeAgent", portName1: "main", agentName2: "ReactiveAgent", portName2: "notify" },
-    (change, agent, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveChange",
+    matchInfo: {
+      agentName1: "ReactiveChangeAgent", 
+      portName1: "main", 
+      agentName2: "ReactiveAgent", 
+      portName2: "notify"
+    },
+    action: (change, agent, network) => {
       // Mark the agent as changed
       if (agent.name === "DerivedAgent") {
         agent.value.dirty = true;
@@ -440,13 +448,19 @@ function registerReactiveRules(network: INetwork): void {
       
       return [change, agent];
     }
-  ));
+  });
   
   // Rule: ReactiveReadAgent <-> ReactiveAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveRead", type: "action" },
-    { agentName1: "ReactiveReadAgent", portName1: "main", agentName2: "ReactiveAgent", portName2: "read" },
-    (read, agent, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveRead",
+    matchInfo: {
+      agentName1: "ReactiveReadAgent", 
+      portName1: "main", 
+      agentName2: "ReactiveAgent", 
+      portName2: "read"
+    },
+    action: (read, agent, network) => {
       // Track as dependency if tracking is enabled
       if (agent.value.trackDependencies) {
         trackDependency(agent._agentId);
@@ -457,13 +471,19 @@ function registerReactiveRules(network: INetwork): void {
       
       return [read, agent];
     }
-  ));
+  });
   
   // Rule: ReactiveWriteAgent <-> ReactiveAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveWrite", type: "action" },
-    { agentName1: "ReactiveWriteAgent", portName1: "main", agentName2: "ReactiveAgent", portName2: "write" },
-    (write, agent, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveWrite",
+    matchInfo: {
+      agentName1: "ReactiveWriteAgent", 
+      portName1: "main", 
+      agentName2: "ReactiveAgent", 
+      portName2: "write"
+    },
+    action: (write, agent, network) => {
       const newValue = write.value.value;
       const prevValue = agent.value.current;
       
@@ -482,13 +502,19 @@ function registerReactiveRules(network: INetwork): void {
       
       return [write, agent];
     }
-  ));
+  });
   
   // Rule: ReactiveObserveAgent <-> ReactiveAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveObserve", type: "action" },
-    { agentName1: "ReactiveObserveAgent", portName1: "main", agentName2: "ReactiveAgent", portName2: "observe" },
-    (observe, agent, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveObserve",
+    matchInfo: {
+      agentName1: "ReactiveObserveAgent", 
+      portName1: "main", 
+      agentName2: "ReactiveAgent", 
+      portName2: "observe"
+    },
+    action: (observe, agent, network) => {
       // Add observer to agent's observers
       if (!agent.value.observers.has(observe.value.observerId)) {
         agent.value.observers.add(observe.value.observerId);
@@ -496,37 +522,58 @@ function registerReactiveRules(network: INetwork): void {
       
       return [observe, agent];
     }
-  ));
+  });
   
   // Rule: ReactiveTriggerAgent <-> EffectAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveTrigger", type: "action" },
-    { agentName1: "ReactiveTriggerAgent", portName1: "main", agentName2: "EffectAgent", portName2: "trigger" },
-    (trigger, effect, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveTrigger",
+    matchInfo: {
+      agentName1: "ReactiveTriggerAgent", 
+      portName1: "main", 
+      agentName2: "EffectAgent", 
+      portName2: "trigger"
+    },
+    action: (trigger, effect, network) => {
       // Run the effect if not disposed
       if (!effect.value.disposed) {
-        runEffect(effect);
+        runEffect(effect as IAgent<"EffectAgent", { 
+          effectFn: () => void, 
+          dependencies: Set<AgentId>,
+          lastRun: number,
+          disposed: boolean,
+          error: Error | null,
+          meta: Record<string, any>
+        }>);
       }
       
       return [trigger, effect];
     }
-  ));
+  });
   
   // Rule: ReactiveDisposeAgent <-> EffectAgent
-  network.addRule(ActionRule(
-    { name: "ReactiveDispose", type: "action" },
-    { agentName1: "ReactiveDisposeAgent", portName1: "main", agentName2: "EffectAgent", portName2: "dispose" },
-    (dispose, effect, network) => {
+  network.addRule({
+    type: "action",
+    name: "ReactiveDispose",
+    matchInfo: {
+      agentName1: "ReactiveDisposeAgent", 
+      portName1: "main", 
+      agentName2: "EffectAgent", 
+      portName2: "dispose"
+    },
+    action: (dispose, effect, network) => {
       // Mark effect as disposed
       effect.value.disposed = true;
       
       // Clean up dependencies
       const deps = Array.from(effect.value.dependencies);
-      updateDependencies(effect, deps, []);
+      // Convert to string array explicitly
+      const depsAsStrings = deps.map(dep => String(dep));
+      updateDependencies(effect, depsAsStrings, []);
       
       return [dispose, effect];
     }
-  ));
+  });
 }
 
 // ========== Public API ==========
@@ -542,7 +589,7 @@ export function createReactive<T>(
   const agent = ReactiveAgent(initialValue, options);
   
   // Create the reactive interface
-  const reactive: IReactive<T> = (() => {
+  const reactive = function(this: any, value: T): T {
     // When called with no arguments, read the value
     if (arguments.length === 0) {
       // Track as dependency if in a tracking context
@@ -551,10 +598,10 @@ export function createReactive<T>(
     }
     
     // When called with one argument, set the value
-    const newValue = arguments[0];
+    const newValue = value;
     
     // Check if value actually changed
-    if (!agent.value.equals(agent.value.current, newValue)) {
+    if (typeof newValue !== 'undefined' && !agent.value.equals(agent.value.current, newValue)) {
       // Update value
       agent.value.previous = agent.value.current;
       agent.value.current = newValue;
@@ -567,7 +614,7 @@ export function createReactive<T>(
     }
     
     return newValue;
-  }) as IReactive<T>;
+  } as IReactive<T>;
   
   // Add peek method
   reactive.peek = () => agent.value.current;
@@ -611,7 +658,7 @@ export function createComputed<T>(
   const agent = DerivedAgent(computeFn, options);
   
   // Create the reactive interface
-  const reactive: IReactive<T> = (() => {
+  const reactive = function(this: any): T {
     // Track as dependency if in a tracking context
     trackDependency(agent._agentId);
     
@@ -621,7 +668,7 @@ export function createComputed<T>(
     }
     
     return agent.value.current;
-  }) as IReactive<T>;
+  } as IReactive<T>;
   
   // Add peek method
   reactive.peek = () => {
@@ -726,9 +773,6 @@ export function createRoot<T>(fn: () => T): T {
 
 // Export additional APIs
 export {
-  ReactiveAgent,
-  DerivedAgent,
-  EffectAgent,
   computeValue,
   runEffect,
   updateDependencies,

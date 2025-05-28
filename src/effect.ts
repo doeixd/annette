@@ -6,10 +6,10 @@
  * 2. Specialized ports (wait/hold) for handling asynchronous operations
  * 3. Rules for effect handling and continuation
  */
-import { Agent, IAgent, AgentId } from "./agent";
+import { Agent, IAgent } from "./agent";
 import { INetwork } from "./network";
-import { Port, IPort } from "./port";
-import { ActionRule, RuleCommand } from "./rule";
+import { Port } from "./port";
+import { ActionRule } from "./rule";
 
 // Effect-related types
 export type EffectDescription = {
@@ -168,16 +168,17 @@ export function ErrorResultAgent(
  * @param network The network to register rules with
  */
 export function registerEffectRules(network: INetwork): void {
+  // Create sample agents to get their bound ports for rule creation
+  const sampleEffect = EffectAgent({ type: "sample" });
+  const sampleHandler = HandlerAgent({});
+  const sampleResult = ResultAgent(null, "sample");
+  const sampleScanner = ResultScanner();
+
   // Rule for Effect-Handler interaction
   network.addRule(ActionRule(
-    { name: "Effect-Handler", type: "action" },
-    { 
-      agentName1: "Effect", 
-      portName1: "hold", 
-      agentName2: "Handler", 
-      portName2: "hold" 
-    },
-    async (effect, handler, network) => {
+    sampleEffect.ports.hold,
+    sampleHandler.ports.hold,
+    (effect, handler, network) => {
       // Get the effect description and handler
       const effectDesc = effect.value.effect;
       const handlers = handler.value.handlers;
@@ -213,26 +214,47 @@ export function registerEffectRules(network: INetwork): void {
         effect.value.status = 'running';
         
         // Execute the handler asynchronously
-        const result = await handlers[effectDesc.type](effectDesc, network);
+        const resultPromise = handlers[effectDesc.type](effectDesc, network);
         
-        // Create a result agent
-        const resultAgent = ResultAgent(
-          result,
-          effectDesc.type
-        );
+        // If it's a promise, handle it async and queue the result
+        if (resultPromise && typeof resultPromise.then === 'function') {
+          resultPromise.then((result: any) => {
+            // Create a result agent
+            const resultAgent = ResultAgent(result, effectDesc.type);
+            
+            // Add the result agent to the network
+            network.addAgent(resultAgent);
+            
+            // Mark the effect as completed
+            effect.value.status = 'completed';
+          }).catch((error: any) => {
+            // Create an error result
+            const errorResult = ErrorResultAgent(
+              error instanceof Error ? error : new Error(String(error)),
+              effectDesc.type
+            );
+            
+            // Add it to the network
+            network.addAgent(errorResult);
+            
+            // Mark the effect as error
+            effect.value.status = 'error';
+          });
+        } else {
+          // Synchronous result
+          const resultAgent = ResultAgent(resultPromise, effectDesc.type);
+          network.addAgent(resultAgent);
+          effect.value.status = 'completed';
+          
+          return [
+            effect,
+            handler,
+            { type: 'add', entity: resultAgent, throwIfExists: false }
+          ];
+        }
         
-        // Add the result agent to the network
-        network.addAgent(resultAgent);
-        
-        // Mark the effect as completed
-        effect.value.status = 'completed';
-        
-        // Return all agents and the result
-        return [
-          effect,
-          handler,
-          { type: 'add', entity: resultAgent, throwIfExists: false }
-        ];
+        // Return agents for now (async results will be added later)
+        return [effect, handler];
         
       } catch (error) {
         // Create an error result
@@ -259,14 +281,9 @@ export function registerEffectRules(network: INetwork): void {
   
   // Rule for connecting Result agents to waiting agents
   network.addRule(ActionRule(
-    { name: "Result-Waiting", type: "action" },
-    { 
-      agentName1: "Result", 
-      portName1: "wait", 
-      agentName2: "Effect", 
-      portName2: "wait" 
-    },
-    (result, effect, network) => {
+    sampleResult.ports.wait,
+    sampleEffect.ports.wait,
+    (result, effect, _network) => {
       console.log(`Delivering result for effect type: ${result.value.effectType}`);
       
       // Return both agents to keep them in the network
@@ -276,13 +293,8 @@ export function registerEffectRules(network: INetwork): void {
   
   // Rule for scanning the network to connect results to waiters
   network.addRule(ActionRule(
-    { name: "ResultScanner", type: "action" },
-    { 
-      agentName1: "Result", 
-      portName1: "wait", 
-      agentName2: "ResultScanner", 
-      portName2: "main" 
-    },
+    sampleResult.ports.wait,
+    sampleScanner.ports.main,
     (result, scanner, network) => {
       // Find effects with wait ports
       const effects = network.findAgents({ name: "Effect" });

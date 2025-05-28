@@ -26,7 +26,8 @@ export type Action<
   Source extends IAgent = IAgent,
   Destination extends IAgent = IAgent,
   TActionReturn extends ActionReturn = ActionReturn,
-> = (agent1: Source, agent2: Destination, network: INetwork) => TActionReturn;
+  N extends INetwork<any,any> = INetwork<any, any>
+> = (agent1: Source, agent2: Destination, network: N) => TActionReturn;
 
 export interface IActionRule<
   Name extends string = string,
@@ -75,6 +76,11 @@ export interface Rewrite {
   internalConnections: InternalConnectionDef[];
   portMapAgent1: ExternalConnectionMap;
   portMapAgent2: ExternalConnectionMap;
+  _optimized?: boolean;
+  _staticRewrite?: boolean;
+  _isDeferredFn?: boolean;
+  _fn?: DefineRewriteFn;
+  _cachedPlans?: Map<any, any>;
 }
 
 export type DefineRewriteFn = (agent1: IAgent, agent2: IAgent) => Rewrite;
@@ -145,8 +151,8 @@ export function ActionRule<
   N extends string,
   S extends IAgent,
   D extends IAgent,
-  SP extends IBoundPort<S>,
-  DP extends IBoundPort<D>
+  SP extends S["ports"][keyof S["ports"]],
+  DP extends D["ports"][keyof D["ports"]]
 >(
   connection: IConnection<N, S, D, SP, DP>,
   action: Action<S, D>,
@@ -222,18 +228,31 @@ export function RewriteRule<
   N extends string,
   S extends IAgent,
   D extends IAgent,
-  SP extends IBoundPort<S>,
-  DP extends IBoundPort<D>
+  SP extends S["ports"][keyof S["ports"]],
+  DP extends D["ports"][keyof D["ports"]]
 >(
   connection: IConnection<N, S, D, SP, DP>,
   definition: DefineRewriteFn | Rewrite,
   ruleName?: string
 ): IRewriteRule;
 
+// Two-port overload
+export function RewriteRule<
+  A1 extends IAgent,
+  A2 extends IAgent,
+  P1 extends IBoundPort<A1>,
+  P2 extends IBoundPort<A2>
+>(
+  port1: P1,
+  port2: P2,
+  definition: DefineRewriteFn | Rewrite,
+  ruleName?: string
+): IRewriteRule;
+
 // Implementation
 export function RewriteRule(
-  portOrConnection: IBoundPort | IConnection,
-  portOrDefinition: IBoundPort | DefineRewriteFn | Rewrite,
+  portOrConnection: IBoundPort<IAgent> | IConnection,
+  portOrDefinition: IBoundPort<IAgent> | DefineRewriteFn | Rewrite,
   definitionOrName?: DefineRewriteFn | Rewrite | string,
   ruleName?: string
 ): IRewriteRule {
@@ -488,8 +507,8 @@ export function TrackedAction<
   N extends string,
   S extends IAgent,
   D extends IAgent,
-  SP extends IBoundPort<S>,
-  DP extends IBoundPort<D>
+  SP extends S["ports"][keyof S["ports"]],
+  DP extends D["ports"][keyof D["ports"]]
 >(
   connection: IConnection<N, S, D, SP, DP>,
   action: Action<S, D>,
@@ -601,3 +620,203 @@ export function TrackedAction(
   
   throw new Error("Invalid arguments provided to TrackedAction. Must use port objects or a connection object.");
 }
+
+
+// Type for the implementation parameter of createDeferredRule, specific to rewrite rules
+export type DeferredRewriteImplementation = DefineRewriteFn | Rewrite;
+
+/**
+ * Creates a rule object (IActionRule or IRewriteRule) defined by a pattern ('matchInfo') 
+ * rather than direct port references from live agents.
+ * This "deferred" rule can be added to a network, which will then try to match
+ * this rule's pattern against actual agent connections.
+ *
+ * @param ruleName A descriptive name for the rule.
+ * @param ruleType Specifies if the rule is an 'action' or a 'rewrite' rule.
+ * @param implementation The function or object defining the rule's logic:
+ *                       - For 'action' rules: an `Action` function.
+ *                       - For 'rewrite' rules: a `DefineRewriteFn` function or a static `Rewrite` object.
+ * @param matchInfo An object detailing the names of agents and ports this rule should match.
+ *                  The `xxxPortType` fields are used to create dummy ports if needed internally for validation
+ *                  or if the implementation function expects agents with specific port structures,
+ *                  but are not directly part of the final rule's `matchInfo` (which uses port names).
+ * @returns An `IActionRule` or `IRewriteRule` object representing the deferred rule.
+ */
+export function createDeferredRule<
+    RuleName extends string,
+    SrcAgentName extends AgentName,
+    SrcPortName extends PortName,
+    DestAgentName extends AgentName,
+    DestPortName extends PortName
+>(
+  ruleName: RuleName,
+  ruleType: 'action',
+  implementation: Action<IAgent<SrcAgentName, any>, IAgent<DestAgentName, any>>,
+  matchInfo: {
+    sourceAgentName: SrcAgentName;
+    sourceAgentPortName: SrcPortName;
+    // sourceAgentPortType: PortTypes; // Kept for potential internal use, but not in final matchInfo
+    destinationAgentName: DestAgentName;
+    destinationAgentPortName: DestPortName; // Corrected typo
+    // destinationAgentPortType: PortTypes; // Kept for potential internal use
+  }
+): IActionRule<RuleName, SrcAgentName, SrcPortName, DestAgentName, DestPortName>;
+
+export function createDeferredRule<
+    RuleName extends string,
+    SrcAgentName extends AgentName,
+    SrcPortName extends PortName,
+    DestAgentName extends AgentName,
+    DestPortName extends PortName
+>(
+  ruleName: RuleName,
+  ruleType: 'rewrite',
+  implementation: DeferredRewriteImplementation, // DefineRewriteFn or Rewrite
+  matchInfo: {
+    sourceAgentName: SrcAgentName;
+    sourceAgentPortName: SrcPortName;
+    // sourceAgentPortType: PortTypes; 
+    destinationAgentName: DestAgentName;
+    destinationAgentPortName: DestPortName;
+    // destinationAgentPortType: PortTypes;
+  }
+): IRewriteRule<RuleName, SrcAgentName, SrcPortName, DestAgentName, DestPortName>;
+
+export function createDeferredRule(
+  ruleName: string,
+  ruleType: 'action' | 'rewrite',
+  implementation: Action | DeferredRewriteImplementation,
+  matchInfo: {
+    sourceAgentName: AgentName;
+    sourceAgentPortName: PortName;
+    // sourceAgentPortType: PortTypes; // Included if needed for dummy agent creation
+    destinationAgentName: AgentName;
+    destinationAgentPortName: PortName; // Corrected typo from "desitnationAgentPortName"
+    // destinationAgentPortType: PortTypes; // Included if needed for dummy agent creation
+  }
+): AnyRule { // Returns the union type
+
+  const ruleMatchInfo = {
+    agentName1: matchInfo.sourceAgentName,
+    portName1: matchInfo.sourceAgentPortName,
+    agentName2: matchInfo.destinationAgentName,
+    portName2: matchInfo.destinationAgentPortName,
+  };
+
+  if (ruleType === 'action') {
+    if (typeof implementation !== 'function') {
+        throw new Error("Invalid implementation for action rule. Expected a function.");
+    }
+    return {
+      type: 'action',
+      name: ruleName,
+      matchInfo: ruleMatchInfo,
+      action: implementation as Action<IAgent, IAgent>, // Cast needed due to overload complexity
+    };
+  } else { // ruleType === 'rewrite'
+    let rewriteObject: Rewrite;
+    if (typeof implementation === 'function') {
+        // This is a DefineRewriteFn.
+        // We need to store it in a way that the network can execute it later.
+        // Your IRewriteRule stores the *resolved* Rewrite object.
+        // So, we adapt the structure from your RewriteRule factory for deferred functions.
+        rewriteObject = { 
+            _isDeferredFn: true,
+            _fn: implementation as DefineRewriteFn,
+            // Provide default empty structure for the Rewrite pattern
+            newAgents: [],
+            internalConnections: [],
+            portMapAgent1: {},
+            portMapAgent2: {},
+            // Optimization flags (optional, but good to be consistent)
+            _optimized: false,
+            _cachedPlans: new Map()
+          } as any; // Cast to 'any' or a more specific internal type if you have one for this structure
+    } else if (typeof implementation === 'object' && implementation !== null) {
+        // This is a static Rewrite object.
+        rewriteObject = {
+            ...(implementation as Rewrite),
+            _optimized: true, // Mark static rewrites as potentially pre-optimized
+            _staticRewrite: true
+        };
+    } else {
+        throw new Error("Invalid implementation for rewrite rule. Expected a function or a Rewrite object.");
+    }
+
+    return {
+      type: 'rewrite',
+      name: ruleName,
+      matchInfo: ruleMatchInfo,
+      rewrite: rewriteObject,
+    };
+  }
+}
+
+// --- Example Usage (for testing, not part of the function itself) ---
+/*
+// Dummy Action and Rewrite implementations for testing
+const exampleAction: Action = (a1, a2, net) => { console.log(`Action: ${a1.name} <-> ${a2.name}`); };
+const exampleDefineRewrite: DefineRewriteFn = (a1, a2) => ({
+  newAgents: [{ name: 'NewAgentFromRewrite', _templateId: 'newA' }],
+  internalConnections: [],
+  portMapAgent1: {},
+  portMapAgent2: {},
+});
+const staticRewritePattern: Rewrite = {
+    newAgents: [{ name: 'StaticNewAgent', _templateId: 'staticA' }],
+    internalConnections: [],
+    portMapAgent1: {},
+    portMapAgent2: {},
+};
+
+
+// Create a deferred action rule
+const deferredActionRule = createDeferredRule(
+    "MyDeferredAction",
+    'action',
+    exampleAction,
+    {
+        sourceAgentName: "SourceTypeA",
+        sourceAgentPortName: "outPort",
+        // sourceAgentPortType: "main", 
+        destinationAgentName: "DestTypeB",
+        destinationAgentPortName: "inPort",
+        // destinationAgentPortType: "main",
+    }
+);
+console.log("Deferred Action Rule:", deferredActionRule);
+
+// Create a deferred rewrite rule with a DefineRewriteFn
+const deferredRewriteRuleFn = createDeferredRule(
+    "MyDeferredRewriteFn",
+    'rewrite',
+    exampleDefineRewrite,
+    {
+        sourceAgentName: "Widget",
+        sourceAgentPortName: "connect",
+        // sourceAgentPortType: "aux",
+        destinationAgentName: "Gadget",
+        destinationAgentPortName: "link",
+        // destinationAgentPortType: "aux",
+    }
+);
+console.log("Deferred Rewrite Rule (from Fn):", deferredRewriteRuleFn);
+if (deferredRewriteRuleFn.type === 'rewrite' && (deferredRewriteRuleFn.rewrite as any)._isDeferredFn) {
+    console.log("Rewrite function stored:", (deferredRewriteRuleFn.rewrite as any)._fn);
+}
+
+
+// Create a deferred rewrite rule with a static Rewrite object
+const deferredRewriteRuleStatic = createDeferredRule(
+    "MyDeferredRewriteStatic",
+    'rewrite',
+    staticRewritePattern,
+    {
+        sourceAgentName: "Gizmo",
+        sourceAgentPortName: "dataOut",
+        destinationAgentName: "Processor",
+        destinationAgentPortName: "dataIn",
+    }
+);
+console.log("Deferred Rewrite Rule (Static):", deferredRewriteRuleStatic);
+*/

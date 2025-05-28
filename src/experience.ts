@@ -4,11 +4,12 @@
  * This module provides improved developer experience features for Annette,
  * including better error handling, debugging utilities, and progressive disclosure.
  */
-import { INetwork, IAgent, IRule, IBoundPort, isAgent, isPort, Core } from './core';
+import { INetwork, IAgent, IRule, IBoundPort, Core } from './core';
+import { isPort } from './port';
 import { StdLib } from './stdlib';
 import { 
   AnnetteError, PortConnectionError, RuleApplicationError,
-  createOptimizedNetwork, AnnetteOptions, DEFAULT_OPTIONS
+  createOptimizedNetwork, AnnetteOptions
 } from './optimization';
 
 // ========== Progressive Disclosure ==========
@@ -47,14 +48,21 @@ export const Simple = {
     agent2Type: string, 
     action: (agent1: IAgent, agent2: IAgent) => void
   ): void {
-    network.addRule(Core.createActionRule(
-      { name: `${agent1Type}-${agent2Type}`, type: 'action' },
-      { agentName1: agent1Type, portName1: 'main', agentName2: agent2Type, portName2: 'main' },
-      (a1, a2, net) => {
+    const rule = {
+      type: 'action' as const,
+      name: `${agent1Type}-${agent2Type}`,
+      matchInfo: {
+        agentName1: agent1Type,
+        portName1: 'main',
+        agentName2: agent2Type,
+        portName2: 'main'
+      },
+      action: (a1: IAgent, a2: IAgent) => {
         action(a1, a2);
         return [a1, a2];
       }
-    ));
+    };
+    network.addRule(rule);
   },
 
   /**
@@ -68,7 +76,7 @@ export const Simple = {
    * Run a single step of the network
    */
   step(network: INetwork): boolean {
-    return network.reduce(1);
+    return network.step();
   },
 
   /**
@@ -94,8 +102,9 @@ export const Advanced = {
   /**
    * Create a network with time travel capabilities
    */
-  createTimeTravelNetwork(name: string): INetwork {
-    return StdLib.TimeTravel.enableTimeTravel(Core.createNetwork(name));
+  createTimeTravelNetwork(name: string): any {
+    const network = Core.createNetwork(name);
+    return StdLib.TimeTravel.enableTimeTravel(network);
   },
 
   /**
@@ -252,7 +261,7 @@ export class ErrorReporter {
   ): RuleApplicationError {
     const error = new RuleApplicationError(
       message,
-      rule,
+      rule as any,
       agent1,
       port1,
       agent2,
@@ -463,24 +472,26 @@ export class DebugTools {
     }
     
     // Otherwise, create a simple snapshot
+    const agents = network.getAllAgents();
+    const connections = network.getAllConnections();
     const snapshot = {
       id,
       timestamp: Date.now(),
-      agents: network.agents.map(agent => ({
+      agents: agents.map((agent: IAgent) => ({
         id: agent._agentId,
         name: agent.name,
         type: agent.type,
         value: JSON.parse(JSON.stringify(agent.value))
       })),
-      connections: network.connections.map(conn => ({
-        key: conn.key,
-        from: {
-          agentId: conn.from.agent._agentId,
-          portName: conn.from.name
+      connections: connections.map(conn => ({
+        name: conn.name,
+        source: {
+          agentId: conn.source._agentId,
+          portName: conn.sourcePort.name
         },
-        to: {
-          agentId: conn.to.agent._agentId,
-          portName: conn.to.name
+        destination: {
+          agentId: conn.destination._agentId,
+          portName: conn.destinationPort.name
         }
       }))
     };
@@ -522,19 +533,18 @@ export class DebugTools {
     const agentsRemoved = Array.from(agentsMap1.values())
       .filter((a: any) => !agentsMap2.has(a.id));
     
-    const agentsChanged = Array.from(agentsMap1.entries())
-      .filter(([id, agent1]: [string, any]) => {
-        const agent2 = agentsMap2.get(id);
-        return agent2 && JSON.stringify(agent1.value) !== JSON.stringify(agent2.value);
-      })
-      .map(([id, agent1]: [string, any]) => {
-        const agent2 = agentsMap2.get(id)!;
-        return {
-          id,
+    const agentsChanged: Array<{ id: string, name: string, changes: any }> = [];
+    
+    agentsMap1.forEach((agent1: any, id: any) => {
+      const agent2 = agentsMap2.get(id);
+      if (agent2 && JSON.stringify(agent1.value) !== JSON.stringify((agent2 as any).value)) {
+        agentsChanged.push({
+          id: id,
           name: agent1.name,
-          changes: this.diffObjects(agent1.value, agent2.value)
-        };
-      });
+          changes: this.diffObjects(agent1.value, (agent2 as any).value)
+        });
+      }
+    });
     
     // Compare connections
     const connectionsMap1 = new Map(snapshot1.connections.map((c: any) => [c.key, c]));
@@ -747,12 +757,13 @@ export function createEnhancedNetwork(
             }
             
             // Check if ports are already connected
-            const existingConnection = target.connections.find(
-              c => (c.from === port1 && c.to === port2) || 
-                   (c.from === port2 && c.to === port1)
+            const existingConnections = target.findConnections({ from: port1 });
+            const isAlreadyConnected = existingConnections.some(conn => 
+              (conn.sourcePort === port1 && conn.destinationPort === port2) || 
+              (conn.sourcePort === port2 && conn.destinationPort === port1)
             );
             
-            if (existingConnection) {
+            if (isAlreadyConnected) {
               const errorReporter = ErrorReporter.getInstance();
               errorReporter.reportWarning(
                 `Ports are already connected: ${port1.agent.name}.${port1.name} and ${port2.agent.name}.${port2.name}`
@@ -816,24 +827,4 @@ export function createEnhancedNetwork(
   return enhancedNetwork;
 }
 
-// ========== Module Exports ==========
-
-// Export all enhancers
-export {
-  // Progressive disclosure APIs
-  Simple,
-  Advanced,
-  
-  // Error handling
-  ErrorReporter,
-  AnnetteError,
-  PortConnectionError,
-  RuleApplicationError,
-  
-  // Debugging
-  DebugTools,
-  DebugLevel,
-  
-  // Enhanced networks
-  createEnhancedNetwork
-};
+// Note: All exports are already declared above with individual export statements

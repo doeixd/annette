@@ -50,7 +50,7 @@ export const Core = {
     ports?: any,
     type?: T
   ): IAgent<N, V, T> {
-    return Agent(name, value, ports, type);
+    return Agent(name, value, ports, type) as IAgent<N, V, T>;
   },
   
   /**
@@ -71,22 +71,24 @@ export const Core = {
    * Create a new action rule
    */
   createActionRule(
-    name: { name: string, type: 'action' },
-    pattern: { agentName1: string, portName1: string, agentName2: string, portName2: string },
-    action: Action
+    port1: IBoundPort,
+    port2: IBoundPort,
+    action: Action,
+    ruleName?: string
   ): IActionRule {
-    return ActionRule(name, pattern, action);
+    return ActionRule(port1, port2, action, ruleName);
   },
   
   /**
    * Create a new rewrite rule
    */
   createRewriteRule(
-    name: { name: string, type: 'rewrite' },
-    pattern: { agentName1: string, portName1: string, agentName2: string, portName2: string },
-    rewrite: Rewrite
+    port1: IBoundPort,
+    port2: IBoundPort,
+    rewrite: Rewrite,
+    ruleName?: string
   ): IRewriteRule {
-    return RewriteRule(name, pattern, rewrite);
+    return RewriteRule(port1, port2, rewrite, ruleName);
   },
   
   /**

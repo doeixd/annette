@@ -8,9 +8,9 @@
  */
 import { Agent, IAgent, AgentId } from "./agent";
 import { IConnection } from "./connection";
-import { INetwork, ChangeHistoryEntry } from "./network";
-import { IBoundPort, getPortInstanceKey } from "./port";
-import { AgentState, ConnectionState, NetworkSnapshot } from "./timetravel";
+import { INetwork } from "./network";
+import { getPortInstanceKey } from "./port";
+import { AgentState, ConnectionState } from "./timetravel";
 
 // Connection status types
 export type ConnectionStatus = 'created' | 'reduced' | 'deleted';
@@ -385,24 +385,24 @@ export class ConnectionHistoryManager {
     const changes: VersionedChange[] = [];
     
     // If network has change history capability, use it
-    if (this.network.getChangeHistory) {
-      const history = this.network.getChangeHistory();
+    if ((this.network as any).getChangeHistory) {
+      const history = (this.network as any).getChangeHistory();
       
       for (const entry of history) {
         // Skip entries that don't have a version or are before the requested version
-        if (!entry.version || entry.version <= version) {
+        if (!(entry as any).version || (entry as any).version <= version) {
           continue;
         }
         
         // Create a versioned change
         const change: VersionedChange = {
           type: 'agent-update',
-          version: entry.version,
-          timestamp: entry.timestamp,
+          version: (entry as any).version,
+          timestamp: (entry as any).timestamp,
           data: {
-            agentId: entry.targetId,
-            previousState: entry.previousState,
-            newState: entry.newState
+            agentId: (entry as any).targetId,
+            previousState: (entry as any).previousState,
+            newState: (entry as any).newState
           }
         };
         
@@ -615,7 +615,7 @@ export class ConnectionHistoryManager {
     // Collect connections from all agents
     for (const agent of agents) {
       if (agent.connections) {
-        for (const connection of Object.values(agent.connections)) {
+        for (const connection of Object.values(agent.connections) as IConnection[]) {
           connections.push(connection);
         }
       }
@@ -693,12 +693,12 @@ export function enableConnectionHistory<T extends INetwork>(
   
   // Wrap the original connectPorts method to record connections
   const originalConnectPorts = network.connectPorts;
-  network.connectPorts = function(...args: any[]) {
-    const result = originalConnectPorts.apply(network, args);
+  (network as any).connectPorts = function(...args: any[]) {
+    const result = originalConnectPorts.apply(network, args as any);
     
     if (result) {
       // Record the connection creation
-      connectionHistory.recordConnectionCreated(result);
+      connectionHistory.recordConnectionCreated(result as any);
     }
     
     return result;
@@ -706,7 +706,7 @@ export function enableConnectionHistory<T extends INetwork>(
   
   // Wrap the original disconnectPorts method to record disconnections
   const originalDisconnectPorts = network.disconnectPorts;
-  network.disconnectPorts = function(...args: any[]) {
+  (network as any).disconnectPorts = function(...args: any[]) {
     // Try to find the connection before it's removed
     const port1 = args[0];
     const port2 = args[1];
@@ -715,7 +715,7 @@ export function enableConnectionHistory<T extends INetwork>(
       // Check if port1 has connections
       if (port1.agent && port1.agent.connections) {
         // Try to find a connection between port1 and port2
-        for (const connection of Object.values(port1.agent.connections)) {
+        for (const connection of Object.values(port1.agent.connections) as any[]) {
           if ((connection.sourcePort === port1 && connection.destinationPort === port2) ||
               (connection.sourcePort === port2 && connection.destinationPort === port1)) {
             // Record the connection deletion
@@ -726,12 +726,12 @@ export function enableConnectionHistory<T extends INetwork>(
       }
     }
     
-    return originalDisconnectPorts.apply(network, args);
+    return originalDisconnectPorts.apply(network, args as any);
   };
   
   // Wrap the original step method to record reductions
   const originalStep = network.step;
-  network.step = function() {
+  (network as any).step = function() {
     // Create a list of active connections before the step
     const beforeConnections = connectionHistory.getConnectionHistory()
       .filter(entry => entry.active);

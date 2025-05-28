@@ -8,12 +8,11 @@
  * 4. Client-server architecture
  */
 import { 
-  Agent, IAgent, AgentId, AgentName,
+  Agent, IAgent,
   Network, INetwork, 
-  Port, IPort, IBoundPort,
-  Connection, IConnection,
-  Rule, IRule, ActionRule, RewriteRule, IActionRule, IRewriteRule,
-  SyncAgent, RemoteAgent, SyncOperation,
+  Port, IBoundPort, PortTypes,
+  IConnection,
+  IRule, ActionRule, RewriteRule, AnyRule,
   NetworkBoundary, NetworkMessage, NetworkNode
 } from './index';
 import { AutoNet, SerializedNet, SerializedNode, SerializedPort } from './auto-net';
@@ -119,46 +118,48 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'sy
 export class DistributedNetwork {
   private network: INetwork;
   private autoNet?: AutoNet;
-  private options: DistributedNetworkOptions;
+  private options: Required<DistributedNetworkOptions>;
   private status: ConnectionStatus = 'disconnected';
-  private connections: Map<string, any> = new Map(); // Connection objects by peer ID
+  private connections = new Map<string, any>();
   private pendingMessages: DistributedNetworkMessage[] = [];
-  private messageHandlers: Map<string, (message: DistributedNetworkMessage) => void> = new Map();
+  private messageHandlers = new Map<string, (message: DistributedNetworkMessage) => void>();
   private syncInterval?: NodeJS.Timeout;
-  private currentVersion: number = 0;
-  private lastSyncedVersion: number = 0;
+  private currentVersion = 0;
+  private lastSyncedVersion = 0;
   private networkId: string;
   private peerId: string;
-  private connectionListeners: Array<(status: ConnectionStatus) => void> = [];
+  private connectionListeners: ((status: ConnectionStatus) => void)[] = [];
   private socket?: WebSocket;
-  private connected: boolean = false;
-  
+  private connected = false;
+
   /**
    * Create a distributed network
    * 
    * @param nameOrNetwork Network name or existing network
    * @param options Configuration options
    */
-  constructor(nameOrNetwork: string | INetwork, options: Partial<DistributedNetworkOptions> = {}) {
+  constructor(
+    nameOrNetwork: string | INetwork,
+    options: Partial<DistributedNetworkOptions> = {}
+  ) {
     // Merge options with defaults
-    this.options = { ...defaultOptions, ...options };
-    
-    // Create or use provided network
+    this.options = {
+      ...defaultOptions,
+      ...options
+    } as Required<DistributedNetworkOptions>;
+
+    // Initialize network
     if (typeof nameOrNetwork === 'string') {
-      this.network = Network(nameOrNetwork);
+      this.network = new (Network as any)(nameOrNetwork);
       this.networkId = nameOrNetwork;
     } else {
       this.network = nameOrNetwork;
       this.networkId = nameOrNetwork.name || 'distributed-network';
     }
-    
-    // Generate a unique peer ID
-    this.peerId = `peer-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    
-    // Set up message handlers
+
+    this.peerId = `peer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.setupMessageHandlers();
-    
-    // Auto-connect if enabled
+
     if (this.options.autoConnect) {
       this.connect();
     }
@@ -231,7 +232,7 @@ export class DistributedNetwork {
    * 
    * @param rule The rule to add
    */
-  public addRule(rule: IRule): void {
+  public addRule(rule: AnyRule): void {
     this.network.addRule(rule);
     
     // If connected, share the rule
@@ -239,7 +240,7 @@ export class DistributedNetwork {
       this.sendNetworkUpdate([{
         type: 'rule-create',
         targetId: rule.name,
-        data: this.serializeRule(rule),
+        data: this.serializeRule(rule as any),
         timestamp: Date.now(),
         version: ++this.currentVersion
       }]);
@@ -273,7 +274,7 @@ export class DistributedNetwork {
    * @param port2 Second port
    * @returns The created connection
    */
-  public connectPorts(port1: IBoundPort, port2: IBoundPort): IConnection | undefined {
+  public connectPorts(port1: IBoundPort, port2: IBoundPort): any {
     const connection = this.network.connectPorts(port1, port2);
     
     // If connected and connection created, share it
@@ -281,7 +282,7 @@ export class DistributedNetwork {
       this.sendNetworkUpdate([{
         type: 'connection-create',
         targetId: connection.name || 'unnamed-connection',
-        data: this.serializeConnection(connection),
+        data: this.serializeConnection(connection as any),
         timestamp: Date.now(),
         version: ++this.currentVersion
       }]);
@@ -533,7 +534,7 @@ export class DistributedNetwork {
       }
       
       // Set up message listener
-      window.addEventListener('message', (event) => {
+      (globalThis as any).addEventListener('message', (event: any) => {
         // Verify origin if specified
         if (this.options.transportOptions?.origin && 
             event.origin !== this.options.transportOptions.origin) {
@@ -652,7 +653,7 @@ export class DistributedNetwork {
    */
   private setupMessageHandlers(): void {
     // Handle join messages
-    this.messageHandlers.set('join', (message) => {
+    this.messageHandlers.set('join', (message: DistributedNetworkMessage) => {
       this.log('info', `Peer ${message.sourceId} joined the network`);
       
       // Store connection
@@ -670,7 +671,7 @@ export class DistributedNetwork {
     });
     
     // Handle leave messages
-    this.messageHandlers.set('leave', (message) => {
+    this.messageHandlers.set('leave', (message: DistributedNetworkMessage) => {
       this.log('info', `Peer ${message.sourceId} left the network`);
       
       // Remove connection
@@ -678,7 +679,7 @@ export class DistributedNetwork {
     });
     
     // Handle snapshot messages
-    this.messageHandlers.set('snapshot', (message) => {
+    this.messageHandlers.set('snapshot', (message: DistributedNetworkMessage) => {
       this.log('info', `Received network snapshot from ${message.sourceId}`);
       
       // Apply the snapshot
@@ -686,7 +687,7 @@ export class DistributedNetwork {
     });
     
     // Handle update messages
-    this.messageHandlers.set('update', (message) => {
+    this.messageHandlers.set('update', (message: DistributedNetworkMessage) => {
       this.log('info', `Received network updates from ${message.sourceId}`);
       
       // Apply the updates
@@ -694,7 +695,7 @@ export class DistributedNetwork {
     });
     
     // Handle query messages
-    this.messageHandlers.set('query', (message) => {
+    this.messageHandlers.set('query', (message: DistributedNetworkMessage) => {
       this.log('info', `Received query from ${message.sourceId}`);
       
       // Handle different query types
@@ -706,7 +707,7 @@ export class DistributedNetwork {
     });
     
     // Handle response messages
-    this.messageHandlers.set('response', (message) => {
+    this.messageHandlers.set('response', (message: DistributedNetworkMessage) => {
       this.log('info', `Received response from ${message.sourceId}`);
       
       // Handle the response based on the correlationId
@@ -714,7 +715,7 @@ export class DistributedNetwork {
     });
     
     // Handle sync messages
-    this.messageHandlers.set('sync', (message) => {
+    this.messageHandlers.set('sync', (message: DistributedNetworkMessage) => {
       // Handle custom messages
       if (message.payload.customType) {
         this.log('info', `Received custom message ${message.payload.customType} from ${message.sourceId}`);
@@ -1143,15 +1144,16 @@ export class DistributedNetwork {
     
     // Add connection information
     for (const agent of agents) {
-      if (agent.connections) {
-        for (const connection of Object.values(agent.connections)) {
+      if ((agent as any).connections) {
+        for (const connection of Object.values((agent as any).connections)) {
+          const conn = connection as any;
           // Find source and target ports in the serialized nodes
-          const sourceNode = nodes.find(node => node.id === connection.source._agentId);
-          const targetNode = nodes.find(node => node.id === connection.destination._agentId);
+          const sourceNode = nodes.find(node => node.id === conn.source._agentId);
+          const targetNode = nodes.find(node => node.id === conn.destination._agentId);
           
           if (sourceNode && targetNode) {
-            const sourcePort = sourceNode.ports.find(port => port.name === connection.sourcePort.name);
-            const targetPort = targetNode.ports.find(port => port.name === connection.destinationPort.name);
+            const sourcePort = sourceNode.ports.find(port => port.name === conn.sourcePort.name);
+            const targetPort = targetNode.ports.find(port => port.name === conn.destinationPort.name);
             
             if (sourcePort && targetPort) {
               sourcePort.connection = targetPort.id;
@@ -1190,48 +1192,55 @@ export class DistributedNetwork {
   /**
    * Serialize a single rule
    */
-  private serializeRule(rule: IRule): SerializedRule {
-    // Extract pattern
-    const pattern = {
-      agentName1: rule.pattern.agentName1,
-      portName1: rule.pattern.portName1,
-      agentName2: rule.pattern.agentName2,
-      portName2: rule.pattern.portName2
-    };
+  private serializeRule(rule: any): SerializedRule {
+    // For AnyRule (IActionRule or IRewriteRule), extract pattern from matchInfo
+    let pattern: any = {};
+    
+    if (rule.matchInfo) {
+      // Extract pattern from matchInfo
+      pattern = {
+        agentName1: rule.matchInfo.agentName1 || '',
+        portName1: rule.matchInfo.portName1 || '',
+        agentName2: rule.matchInfo.agentName2 || '',
+        portName2: rule.matchInfo.portName2 || ''
+      };
+    }
     
     // Serialize implementation based on rule type
     let implementation = '';
+    let ruleType: 'action' | 'rewrite' = 'action';
     
     if (rule.type === 'action') {
       // Serialize action function
-      const actionRule = rule as IActionRule;
-      implementation = actionRule.action.toString();
+      ruleType = 'action';
+      implementation = rule.action?.toString() || '';
     } else if (rule.type === 'rewrite') {
       // Serialize rewrite pattern
-      const rewriteRule = rule as IRewriteRule;
-      implementation = JSON.stringify(rewriteRule.rewrite);
+      ruleType = 'rewrite';
+      implementation = JSON.stringify(rule.rewrite || {});
     }
     
     return {
       id: rule.id || `rule-${rule.name}`,
       name: rule.name,
-      type: rule.type,
+      type: ruleType,
       pattern,
       implementation,
-      metadata: rule.metadata
+      metadata: rule.metadata || {}
     };
   }
   
   /**
    * Serialize an agent
    */
-  private serializeAgent(agent: IAgent): any {
+  private serializeAgent(agent: IAgent): SerializedNode {
     return {
       id: agent._agentId,
       name: agent.name,
       type: agent.type || 'unknown',
       value: JSON.parse(JSON.stringify(agent.value)),
       ports: Object.entries(agent.ports).map(([name, port]) => ({
+        id: `${agent._agentId}-${name}`,
         name,
         type: port.type
       }))
@@ -1254,38 +1263,30 @@ export class DistributedNetwork {
   /**
    * Deserialize an agent
    */
-  private deserializeAgent(agentData: any): IAgent | undefined {
+  private deserializeAgent(data: SerializedNode): IAgent | undefined {
     try {
-      // Create the agent
       const agent = Agent(
-        agentData.name,
-        agentData.value,
+        data.name,
+        data.value,
         Object.fromEntries(
-          agentData.ports.map((port: any) => [
+          data.ports.map(port => [
             port.name,
-            Port(port.name, port.type)
+            Port(port.name, port.type as PortTypes)
           ])
         )
       );
-      
-      // Try to set the agent ID
-      try {
-        Object.defineProperty(agent, '_agentId', {
-          value: agentData.id,
-          writable: false,
-          configurable: false
-        });
-      } catch (error) {
-        // If we can't set the ID, log a warning
-        this.log('warn', `Could not set agent ID to ${agentData.id}`);
-      }
-      
-      // Add to the network
+
+      // Set agent ID
+      Object.defineProperty(agent, '_agentId', {
+        value: data.id,
+        writable: false,
+        configurable: false
+      });
+
       this.network.addAgent(agent);
-      
       return agent;
     } catch (error) {
-      this.log('error', `Error deserializing agent: ${agentData.id}`, error);
+      this.log('error', `Error deserializing agent: ${data.id}`, error);
       return undefined;
     }
   }
@@ -1325,13 +1326,9 @@ export class DistributedNetwork {
    */
   private deserializeRule(ruleData: SerializedRule): IRule | undefined {
     try {
-      // Create the rule based on type
-      let rule: IRule;
-      
       if (ruleData.type === 'action') {
         // Parse the action function
         let actionFn;
-        
         try {
           // WARNING: This is a security risk if the source is untrusted
           // In a real implementation, use a safer approach
@@ -1340,39 +1337,79 @@ export class DistributedNetwork {
           this.log('error', `Error parsing action function for rule ${ruleData.name}`, error);
           return undefined;
         }
+
+        // Create or find the connection based on the pattern
+        const sourceAgent = this.network.findAgents({ name: ruleData.pattern.agentName1 })[0];
+        const targetAgent = this.network.findAgents({ name: ruleData.pattern.agentName2 })[0];
         
-        // Create the action rule
-        rule = ActionRule(
-          { name: ruleData.name, type: 'action', metadata: ruleData.metadata },
-          ruleData.pattern,
-          actionFn
-        );
-      } else if (ruleData.type === 'rewrite') {
+        let connection;
+        if (sourceAgent && targetAgent) {
+          const sourcePort = sourceAgent.ports[ruleData.pattern.portName1];
+          const targetPort = targetAgent.ports[ruleData.pattern.portName2];
+          if (sourcePort && targetPort) {
+            connection = this.network.connectPorts(sourcePort, targetPort);
+          }
+        }
+
+        // Create the rule with the connection
+        const rule = {
+          name: ruleData.name,
+          type: 'action' as const,
+          matchInfo: ruleData.pattern,
+          action: actionFn,
+          connection: connection!
+        };
+        
+        if (connection) {
+          this.network.addRule(rule);
+          return rule;
+        }
+        return undefined;
+      } 
+      else if (ruleData.type === 'rewrite') {
         // Parse the rewrite pattern
         let rewritePattern;
-        
         try {
           rewritePattern = JSON.parse(ruleData.implementation);
         } catch (error) {
           this.log('error', `Error parsing rewrite pattern for rule ${ruleData.name}`, error);
           return undefined;
         }
+
+        // Create or find the connection for rewrite rule
+        const sourceAgent = this.network.findAgents({ name: ruleData.pattern.agentName1 })[0];
+        const targetAgent = this.network.findAgents({ name: ruleData.pattern.agentName2 })[0];
         
-        // Create the rewrite rule
-        rule = RewriteRule(
-          { name: ruleData.name, type: 'rewrite', metadata: ruleData.metadata },
-          ruleData.pattern,
-          rewritePattern
-        );
-      } else {
-        this.log('error', `Unknown rule type: ${ruleData.type}`);
-        return undefined;
+        let connection;
+        if (sourceAgent && targetAgent) {
+          const sourcePort = sourceAgent.ports[ruleData.pattern.portName1];
+          const targetPort = targetAgent.ports[ruleData.pattern.portName2];
+          if (sourcePort && targetPort) {
+            connection = this.network.connectPorts(sourcePort, targetPort);
+          }
+        }
+
+        if (!connection) {
+          this.log('error', `Could not create connection for rewrite rule ${ruleData.name}`);
+          return undefined;
+        }
+
+        // Create the rewrite rule using pattern
+        const rule = {
+          name: ruleData.name,
+          type: 'rewrite' as const,
+          matchInfo: ruleData.pattern,
+          rewrite: rewritePattern,
+          connection: connection,
+          action: () => {} // Empty action for rewrite rules
+        };
+        
+        this.network.addRule(rule);
+        return rule;
       }
       
-      // Add the rule to the network
-      this.network.addRule(rule);
-      
-      return rule;
+      this.log('error', `Unknown rule type: ${ruleData.type}`);
+      return undefined;
     } catch (error) {
       this.log('error', `Error deserializing rule: ${ruleData.name}`, error);
       return undefined;

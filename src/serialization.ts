@@ -18,12 +18,15 @@ import {
   createReference,
   Feature,
   toCrossJSON,
-  fromCrossJSON
+  fromCrossJSON,
+  SerovalJSON
 } from 'seroval';
 
 import { IAgent } from './agent';
 import { INetwork } from './network';
 import { IRule } from './rule';
+import { IConnection } from './connection';
+import { PortTypes } from './port';
 
 /**
  * Reference registry for isomorphic functions
@@ -128,9 +131,9 @@ export function deepClone<T>(value: T, options: SerializationOptions = DEFAULT_S
  */
 export function serializeValue<T>(value: T, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): string {
   if (options.jsonSafe) {
-    return toJSON(value);
+    return String(toJSON(value));
   } else {
-    return serialize(value, { disabledFeatures: options.disabledFeatures });
+    return String(serialize(value, { disabledFeatures: options.disabledFeatures }));
   }
 }
 
@@ -143,7 +146,7 @@ export function serializeValue<T>(value: T, options: SerializationOptions = DEFA
  */
 export function deserializeValue<T>(serialized: string, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): T {
   if (options.jsonSafe) {
-    return fromJSON(serialized);
+    return fromJSON<T>(serialized as unknown as SerovalJSON);
   } else {
     return deserialize(serialized);
   }
@@ -173,17 +176,15 @@ export function serializeForTransport<T>(value: T, options: SerializationOptions
   const refs = options.refs || new Map();
   
   if (options.jsonSafe) {
-    return toCrossJSON(value, {
+    return String(toCrossJSON(value, {
       disabledFeatures: options.disabledFeatures,
-      refs,
-      scopeId: options.scopeId
-    });
+      refs
+    }));
   } else {
-    return crossSerialize(value, {
+    return String(crossSerialize(value, {
       disabledFeatures: options.disabledFeatures,
-      refs,
-      scopeId: options.scopeId
-    });
+      refs
+    }));
   }
 }
 
@@ -196,7 +197,7 @@ export function serializeForTransport<T>(value: T, options: SerializationOptions
  */
 export function deserializeFromTransport<T>(serialized: string, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): T {
   if (options.jsonSafe) {
-    return fromCrossJSON(serialized);
+    return fromCrossJSON(JSON.parse(serialized), options);
   } else {
     return deserialize(serialized);
   }
@@ -264,7 +265,6 @@ export function getCrossReferenceHeader(scopeId?: string): string {
  * @returns Serialized agent string
  */
 export function serializeAgent(agent: IAgent, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): string {
-  // Create a serializable representation without circular references
   const serializable = {
     _agentId: agent._agentId,
     name: agent.name,
@@ -275,7 +275,7 @@ export function serializeAgent(agent: IAgent, options: SerializationOptions = DE
     }))
   };
   
-  return serializeForTransport(serializable, options);
+  return String(serializeForTransport(serializable, options));
 }
 
 /**
@@ -286,11 +286,10 @@ export function serializeAgent(agent: IAgent, options: SerializationOptions = DE
  * @returns Serialized network string
  */
 export function serializeNetwork(network: INetwork, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): string {
-  // Create a serializable representation of the network without circular references
   const serializable = {
     id: network.id,
     name: network.name,
-    agents: network.getAgents().map(agent => ({
+    agents: network.getAllAgents().map((agent: IAgent) => ({
       _agentId: agent._agentId,
       name: agent.name,
       value: agent.value,
@@ -299,16 +298,15 @@ export function serializeNetwork(network: INetwork, options: SerializationOption
         type: agent.ports[key].type
       }))
     })),
-    connections: network.getConnections().map(conn => ({
-      id: conn.id,
-      port1AgentId: conn.port1.agentId,
-      port1Name: conn.port1.name,
-      port2AgentId: conn.port2.agentId,
-      port2Name: conn.port2.name
+    connections: network.getAllConnections().map((conn: IConnection) => ({
+      sourceAgent: conn.source._agentId,
+      sourcePort: conn.sourcePort.name,
+      targetAgent: conn.destination._agentId,
+      targetPort: conn.destinationPort.name
     }))
   };
   
-  return serializeForTransport(serializable, options);
+  return String(serializeForTransport(serializable, options));
 }
 
 /**
@@ -319,17 +317,18 @@ export function serializeNetwork(network: INetwork, options: SerializationOption
  * @returns Serialized rule string
  */
 export function serializeRule(rule: IRule, options: SerializationOptions = DEFAULT_SERIALIZATION_OPTIONS): string {
-  // Create a serializable representation of the rule
   const serializable = {
     name: rule.name,
-    type: rule.type,
-    port1AgentName: rule.port1AgentName,
-    port1Name: rule.port1Name,
-    port2AgentName: rule.port2AgentName,
-    port2Name: rule.port2Name
+    connection: {
+      sourceAgent: rule.connection.source._agentId,
+      sourcePort: rule.connection.sourcePort.name,
+      targetAgent: rule.connection.destination._agentId,
+      targetPort: rule.connection.destinationPort.name
+    },
+    hasAction: !!rule.action
   };
   
-  return serializeForTransport(serializable, options);
+  return String(serializeForTransport(serializable, options));
 }
 
 // Register common isomorphic references

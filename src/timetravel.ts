@@ -1,7 +1,8 @@
 import { Agent, AgentId, IAgent } from "./agent";
-import { IConnection, ConnectFn } from "./connection";
-import { INetwork, ChangeHistoryEntry } from "./network";
-import { IBoundPort, PortInstanceKey, getPortInstanceKey } from "./port";
+import { IConnection } from "./connection";
+import { INetwork, Network } from "./network";
+import { BoundPortsMap, IBoundPort, PortInstanceKey, getPortInstanceKey } from "./port";
+import { AnyRule } from "./rule";
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -23,12 +24,14 @@ export interface AgentState {
   name: string;
   type: string;
   value: any;
+  // ports: BoundPortsMap<any, any>
   ports: {
     [portName: string]: {
       name: string;
       type: string;
+      // value: any;
     }
-  };
+  }
 }
 
 /**
@@ -57,15 +60,21 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
    * Create a time travel manager for a network
    * @param network The network to manage
    */
-  constructor(private network: INetwork<Name, A>) {}
+  constructor(private network: INetwork<Name, A>) {
+    // Remove unused flags
+    this.autoSnapshotEnabled = false;
+    this.autoSnapshotInterval = 0;
+  }
 
   /**
    * Take a snapshot of the current network state
    * @param description Optional description of the snapshot
    * @returns The created snapshot
    */
+
   takeSnapshot(description: string = "Manual snapshot"): NetworkSnapshot {
     const snapshot: NetworkSnapshot = {
+
       id: uuidv4(),
       timestamp: Date.now(),
       description,
@@ -83,8 +92,8 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
     const connections = this.getAllConnections();
     for (const connection of connections) {
       const connectionKey = this.getConnectionKey(
-        connection.sourcePortKey,
-        connection.destinationPortKey
+        getPortInstanceKey(connection.sourcePort),
+        getPortInstanceKey(connection.destinationPort)
       );
       
       snapshot.connections.set(connectionKey, {
@@ -284,15 +293,29 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
    */
   exportSnapshots(): string {
     // Convert Maps to objects for JSON serialization
-    const serialized = this.snapshots.map(snapshot => ({
-      id: snapshot.id,
-      timestamp: snapshot.timestamp,
-      description: snapshot.description,
-      agentStates: Array.from(snapshot.agentStates.entries())
-        .reduce((obj, [key, value]) => ({...obj, [key]: value}), {}),
-      connections: Array.from(snapshot.connections.entries())
-        .reduce((obj, [key, value]) => ({...obj, [key]: value}), {})
-    }));
+    const serialized = this.snapshots.map(snapshot => {
+      // Convert Maps to regular objects for serialization
+      const agentStatesObj: Record<string, AgentState> = {};
+      const connectionsObj: Record<string, ConnectionState> = {};
+      
+      // Convert agentStates Map to object
+      snapshot.agentStates.forEach((value, key) => {
+        agentStatesObj[key] = value;
+      });
+      
+      // Convert connections Map to object
+      snapshot.connections.forEach((value, key) => {
+        connectionsObj[key] = value;
+      });
+      
+      return {
+        id: snapshot.id,
+        timestamp: snapshot.timestamp,
+        description: snapshot.description,
+        agentStates: agentStatesObj,
+        connections: connectionsObj
+      };
+    });
     
     return JSON.stringify(serialized);
   }
@@ -311,13 +334,33 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
       }
       
       // Convert objects back to Maps
-      this.snapshots = parsed.map(item => ({
-        id: item.id,
-        timestamp: item.timestamp,
-        description: item.description,
-        agentStates: new Map(Object.entries(item.agentStates)),
-        connections: new Map(Object.entries(item.connections))
-      }));
+      this.snapshots = parsed.map(item => {
+        // Create new Maps for agent states and connections
+        const agentStatesMap = new Map<AgentId, AgentState>();
+        const connectionsMap = new Map<string, ConnectionState>();
+        
+        // Convert agent states object to Map
+        if (item.agentStates && typeof item.agentStates === 'object') {
+          Object.entries(item.agentStates).forEach(([key, value]) => {
+            agentStatesMap.set(key, value as AgentState);
+          });
+        }
+        
+        // Convert connections object to Map
+        if (item.connections && typeof item.connections === 'object') {
+          Object.entries(item.connections).forEach(([key, value]) => {
+            connectionsMap.set(key, value as ConnectionState);
+          });
+        }
+        
+        return {
+          id: item.id,
+          timestamp: item.timestamp,
+          description: item.description,
+          agentStates: agentStatesMap,
+          connections: connectionsMap
+        };
+      });
       
       this.currentSnapshotIndex = this.snapshots.length - 1;
       return true;
@@ -410,9 +453,18 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
    * Get all agents from the network
    */
   private getAllAgents(): IAgent[] {
+    // Use the getAllAgents method from the network if available
+    if (typeof this.network.getAllAgents === 'function') {
+      return this.network.getAllAgents();
+    }
+    
+    // Fallback to findAgents without a filter to get all agents
+    if (typeof this.network.findAgents === 'function') {
+      return this.network.findAgents({});
+    }
+    
+    // Last resort fallback (should never happen with current implementation)
     const agents: IAgent[] = [];
-    // Note: This is a simplistic approach. In a real implementation,
-    // the network would ideally provide a method to get all agents.
     for (let i = 0; i < 10000; i++) { // Arbitrary limit to prevent infinite loops
       const agent = this.network.getAgent(String(i));
       if (!agent) break;
@@ -425,23 +477,47 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
    * Get all connections from the network
    */
   private getAllConnections(): IConnection[] {
-    const connections: IConnection[] = [];
+    const connections: Set<IConnection> = new Set();
     const agents = this.getAllAgents();
     
-    // Collect connections from all agents
+    // Collect connections from all agents by checking all ports
     for (const agent of agents) {
       for (const port of Object.values(agent.ports)) {
-        if (port.agent && port.agent.connections) {
-          for (const connection of Object.values(port.agent.connections)) {
-            if (!connections.includes(connection)) {
-              connections.push(connection);
+        // Skip ports that aren't connected
+        if (!this.network.isPortConnected(port)) {
+          continue;
+        }
+        
+        // Try to find the connection by connecting this port with another port
+        for (const otherAgent of agents) {
+          if (agent === otherAgent) continue;
+          
+          for (const otherPort of Object.values(otherAgent.ports)) {
+            try {
+              // Check if these ports are connected
+              if (this.network.isPortConnected(otherPort)) {
+                // Create a connection object
+                const connection = {
+                  source: agent,
+                  sourcePort: port,
+                  sourcePortKey: getPortInstanceKey(port),
+                  destination: otherAgent,
+                  destinationPort: otherPort,
+                  destinationPortKey: getPortInstanceKey(otherPort),
+                  name: `${agent.name}.${port.name}-to-${otherAgent.name}.${otherPort.name}`
+                };
+                
+                connections.add(connection as IConnection);
+              }
+            } catch (e) {
+              // Ignore errors during connection discovery
             }
           }
         }
       }
     }
     
-    return connections;
+    return Array.from(connections);
   }
   
   /**
@@ -449,28 +525,14 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
    */
   private clearNetwork(): void {
     const agents = this.getAllAgents();
+    const connections = this.getAllConnections();
     
     // First disconnect all ports to avoid errors
-    for (const agent of agents) {
-      for (const portName in agent.ports) {
-        try {
-          const port = agent.ports[portName];
-          const connections = Object.values(agent.connections || {});
-          
-          for (const connection of connections) {
-            try {
-              if (connection.source === agent && connection.sourcePort === port) {
-                this.network.disconnectPorts(port, connection.destinationPort);
-              } else if (connection.destination === agent && connection.destinationPort === port) {
-                this.network.disconnectPorts(connection.sourcePort, port);
-              }
-            } catch (e) {
-              // Ignore errors during disconnection
-            }
-          }
-        } catch (e) {
-          // Ignore errors during port discovery
-        }
+    for (const connection of connections) {
+      try {
+        this.network.disconnectPorts(connection.sourcePort, connection.destinationPort);
+      } catch (e) {
+        // Ignore errors during disconnection
       }
     }
     
@@ -503,16 +565,26 @@ export class TimeTravelManager<Name extends string = string, A extends IAgent = 
       name: agent.name,
       type: agent.type || "",
       value: JSON.parse(JSON.stringify(agent.value)),
-      ports
+      // ports: agent.ports
+      ports,
     };
   }
   
   /**
-   * Generate a unique key for a connection
+   * Get a unique key for a connection
    */
   private getConnectionKey(sourceKey: PortInstanceKey, destKey: PortInstanceKey): string {
     return `${sourceKey}-${destKey}`;
   }
+  
+  private getConnectionKeyFromConnection(connection: IConnection): string {
+    return this.getConnectionKey(
+      getPortInstanceKey(connection.sourcePort),
+      getPortInstanceKey(connection.destinationPort)
+    );
+  }
+  
+  // These methods were removed as they are not being used
 }
 
 /**
@@ -551,13 +623,12 @@ export interface ITimeTravelNetwork<Name extends string = string, A extends IAge
  * @param rules Optional initial rules
  * @returns An enhanced network with time travel functionality
  */
+// Network is already imported at the top
+
 export function TimeTravelNetwork<
   Name extends string,
   A extends IAgent = IAgent,
->(name: Name, agents?: A[], rules?: any[]): ITimeTravelNetwork<Name, A> {
-  // Import the Network function dynamically to avoid circular dependencies
-  const { Network } = require('./network');
-  
+>(name: Name, agents?: A[], rules?: AnyRule[]): ITimeTravelNetwork<Name, A> {
   // Create the base network
   const baseNetwork = Network<Name, A>(name, agents, rules);
   

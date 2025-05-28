@@ -6,12 +6,10 @@
  * 2. Message passing between networks
  * 3. Operation-based CRDT support
  */
-import { Agent, IAgent, AgentId } from "./agent";
-import { IConnection } from "./connection";
+import { Agent, IAgent } from "./agent";
 import { INetwork } from "./network";
 import { Port } from "./port";
 import { ActionRule } from "./rule";
-import { UpdateOperation, Updates, Updater } from "./updater";
 import { VersionedChange } from "./connection-history";
 
 // Network message types
@@ -184,16 +182,16 @@ export class NetworkBoundary {
         localTargetAgent.ports.main
       );
       
-      // Reduce the network to apply the interaction
-      this.targetNetwork.reduce();
+      // Step the network to apply the interaction
+      this.targetNetwork.step();
     });
     
     // Handler for sync messages
     this.registerHandler('sync', (message) => {
       // Check if the target network supports applying changes
-      if (typeof this.targetNetwork.applyChanges === 'function') {
-        // Apply the changes
-        this.targetNetwork.applyChanges(message.data.changes);
+      if (typeof (this.targetNetwork as any).applyChanges === 'function') {
+        // Apply the changes (assumes the network has connection history capabilities)
+        (this.targetNetwork as any).applyChanges(message.data.changes);
       } else {
         console.warn("Target network does not support applying changes");
       }
@@ -328,14 +326,9 @@ export function createNetworkBoundaryAgent(
 export function registerNetworkBoundaryRules(network: INetwork): void {
   // Rule for sending messages
   network.addRule(ActionRule(
-    { name: "NetworkBoundary-Send", type: "action" },
-    { 
-      agentName1: "NetworkBoundary", 
-      portName1: "send", 
-      agentName2: "MessageSender", 
-      portName2: "main" 
-    },
-    (boundary, sender, network) => {
+    network.getAgent("NetworkBoundary")?.ports.send!,
+    network.getAgent("MessageSender")?.ports.main!,
+    (boundary: IAgent, sender: IAgent, network: INetwork) => {
       // Get the message from the sender
       const message = sender.value.message;
       
@@ -358,14 +351,9 @@ export function registerNetworkBoundaryRules(network: INetwork): void {
   
   // Rule for receiving messages
   network.addRule(ActionRule(
-    { name: "NetworkBoundary-Receive", type: "action" },
-    { 
-      agentName1: "NetworkBoundary", 
-      portName1: "receive", 
-      agentName2: "MessageReceiver", 
-      portName2: "main" 
-    },
-    (boundary, receiver, network) => {
+    network.getAgent("NetworkBoundary")?.ports.receive!,
+    network.getAgent("MessageReceiver")?.ports.main!,
+    (boundary: IAgent, receiver: IAgent, network: INetwork) => {
       // Check if there are any messages to deliver
       if (boundary.value.messages.length > 0) {
         // Get the oldest message

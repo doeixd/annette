@@ -4,8 +4,30 @@
  * This module provides performance optimizations for Annette networks,
  * including rule indexing, lazy evaluation, structural sharing, and memory management.
  */
-import { INetwork, IAgent, IRule, IBoundPort, AgentName, AgentId, isAgent } from './core';
-import produce from 'immer';
+import { INetwork, IAgent, IBoundPort, AgentName, AgentId } from './core';
+import { AnyRule } from './rule';
+import { isAgent } from './agent';
+import { produce } from 'immer';
+
+// Type declarations for environments that might not have Worker
+declare global {
+  var Worker: {
+    new (url: string): {
+      postMessage(data: any): void;
+      onmessage: ((event: { data: any }) => void) | null;
+      terminate(): void;
+    };
+  } | undefined;
+  var navigator: {
+    hardwareConcurrency?: number;
+  } | undefined;
+}
+
+// Extended network interface for optimization features
+interface OptimizedNetwork extends INetwork {
+  _connections?: any[];
+  applyRule?(rule: AnyRule, connection: any): any;
+}
 
 // ========== Rule Indexing ==========
 
@@ -13,21 +35,21 @@ import produce from 'immer';
  * Rule index for efficient rule matching
  */
 export class RuleIndex {
-  private agentTypeIndex: Map<AgentName, Set<IRule>> = new Map();
-  private portNameIndex: Map<string, Set<IRule>> = new Map();
-  private patternIndex: Map<string, Set<IRule>> = new Map();
-  private ruleCache: Map<string, IRule | null> = new Map();
+  private agentTypeIndex: Map<AgentName, Set<AnyRule>> = new Map();
+  private portNameIndex: Map<string, Set<AnyRule>> = new Map();
+  private patternIndex: Map<string, Set<AnyRule>> = new Map();
+  private ruleCache: Map<string, AnyRule | null> = new Map();
   private cacheHits = 0;
   private cacheMisses = 0;
 
   /**
    * Add a rule to the index
    */
-  addRule(rule: IRule): void {
-    if (!rule.pattern) return;
+  addRule(rule: AnyRule): void {
+    if (!('matchInfo' in rule)) return;
 
     // Extract pattern information
-    const { agentName1, portName1, agentName2, portName2 } = rule.pattern;
+    const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
 
     // Index by agent types
     this.addToIndex(this.agentTypeIndex, agentName1, rule);
@@ -50,11 +72,11 @@ export class RuleIndex {
   /**
    * Remove a rule from the index
    */
-  removeRule(rule: IRule): void {
-    if (!rule.pattern) return;
+  removeRule(rule: AnyRule): void {
+    if (!('matchInfo' in rule)) return;
 
     // Extract pattern information
-    const { agentName1, portName1, agentName2, portName2 } = rule.pattern;
+    const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
 
     // Remove from agent type index
     this.removeFromIndex(this.agentTypeIndex, agentName1, rule);
@@ -77,7 +99,7 @@ export class RuleIndex {
   /**
    * Find applicable rules for a given connection
    */
-  findRules(agent1: IAgent, port1: IBoundPort, agent2: IAgent, port2: IBoundPort): IRule[] {
+  findRules(agent1: IAgent, port1: IBoundPort, agent2: IAgent, port2: IBoundPort): AnyRule[] {
     // Check cache first
     const cacheKey = this.getCacheKey(agent1, port1, agent2, port2);
     if (this.ruleCache.has(cacheKey)) {
@@ -92,7 +114,7 @@ export class RuleIndex {
     const reversePatternKey = `${agent2.name}:${port2.name}-${agent1.name}:${port1.name}`;
     
     // Get rules that might match this pattern
-    const patternRules = new Set<IRule>();
+    const patternRules = new Set<AnyRule>();
     
     const exactRules = this.patternIndex.get(patternKey);
     if (exactRules) {
@@ -124,7 +146,7 @@ export class RuleIndex {
     }
     
     // Filter rules to ensure they match the exact port names
-    const matchingRules: IRule[] = [];
+    const matchingRules: AnyRule[] = [];
     for (const rule of patternRules) {
       if (this.ruleMatches(rule, agent1, port1, agent2, port2)) {
         matchingRules.push(rule);
@@ -145,14 +167,14 @@ export class RuleIndex {
    * Check if a rule matches the given agents and ports
    */
   private ruleMatches(
-    rule: IRule, 
+    rule: AnyRule, 
     agent1: IAgent, 
     port1: IBoundPort, 
     agent2: IAgent, 
     port2: IBoundPort
   ): boolean {
-    const pattern = rule.pattern;
-    if (!pattern) return false;
+    if (!('matchInfo' in rule)) return false;
+    const pattern = rule.matchInfo;
     
     // Try direct matching
     if (
@@ -392,7 +414,7 @@ export class StructuralSharing {
    * (only creates new objects for branches that change)
    */
   static deepClone<T>(obj: T): T {
-    return produce(obj, draft => {
+    return produce(obj, () => {
       // Immer automatically handles deep cloning with structural sharing
     });
   }
@@ -490,7 +512,8 @@ export class MemoryManager {
     
     // Sweep phase - remove unreachable agents
     let removedCount = 0;
-    for (const agent of this.network.agents) {
+    const allAgents = this.network.getAllAgents();
+    for (const agent of allAgents) {
       if (!reachableAgents.has(agent._agentId)) {
         this.network.removeAgent(agent);
         removedCount++;
@@ -510,8 +533,9 @@ export class MemoryManager {
     const incomingConnections = new Map<AgentId, number>();
     
     // Count incoming connections for each agent
-    for (const conn of this.network.connections) {
-      const toAgentId = conn.to.agent._agentId;
+    const allConnections = this.network.getAllConnections();
+    for (const conn of allConnections) {
+      const toAgentId = conn.destination._agentId;
       incomingConnections.set(
         toAgentId, 
         (incomingConnections.get(toAgentId) || 0) + 1
@@ -519,7 +543,8 @@ export class MemoryManager {
     }
     
     // Agents with no incoming connections are roots
-    for (const agent of this.network.agents) {
+    const allAgents = this.network.getAllAgents();
+    for (const agent of allAgents) {
       if (!incomingConnections.has(agent._agentId)) {
         roots.add(agent._agentId);
       }
@@ -527,7 +552,7 @@ export class MemoryManager {
     
     // If no roots found, consider all agents as roots
     if (roots.size === 0) {
-      for (const agent of this.network.agents) {
+      for (const agent of allAgents) {
         roots.add(agent._agentId);
       }
     }
@@ -549,9 +574,10 @@ export class MemoryManager {
     if (!agent) return;
     
     // Visit all connected agents
-    for (const conn of this.network.connections) {
-      if (conn.from.agent._agentId === agentId) {
-        this.markReachableAgents(conn.to.agent._agentId, reachable);
+    const allConnections = this.network.getAllConnections();
+    for (const conn of allConnections) {
+      if (conn.source._agentId === agentId) {
+        this.markReachableAgents(conn.destination._agentId, reachable);
       }
     }
   }
@@ -631,7 +657,7 @@ interface WorkerResult {
  * Parallel processing manager
  */
 export class ParallelProcessing {
-  private workers: Worker[] = [];
+  private workers: any[] = [];
   private taskCallbacks: Map<string, (result: WorkerResult) => void> = new Map();
   private workerScriptUrl: string;
   private isInitialized = false;
@@ -639,7 +665,7 @@ export class ParallelProcessing {
   /**
    * Create a parallel processing manager
    */
-  constructor(workerScriptUrl: string, numWorkers = navigator.hardwareConcurrency || 4) {
+  constructor(workerScriptUrl: string, numWorkers = 4) {
     this.workerScriptUrl = workerScriptUrl;
     this.initialize(numWorkers);
   }
@@ -661,7 +687,7 @@ export class ParallelProcessing {
         const worker = new Worker(this.workerScriptUrl);
         
         // Set up message handler
-        worker.onmessage = (event: MessageEvent<WorkerResult>) => {
+        worker.onmessage = (event: any) => {
           const result = event.data;
           const callback = this.taskCallbacks.get(result.taskId);
           
@@ -789,7 +815,7 @@ export class PortConnectionError extends AnnetteError {
  * Error for rule application issues
  */
 export class RuleApplicationError extends AnnetteError {
-  rule: IRule;
+  rule: AnyRule;
   agent1?: IAgent;
   port1?: IBoundPort;
   agent2?: IAgent;
@@ -797,7 +823,7 @@ export class RuleApplicationError extends AnnetteError {
 
   constructor(
     message: string,
-    rule: IRule,
+    rule: AnyRule,
     agent1?: IAgent,
     port1?: IBoundPort,
     agent2?: IAgent,
@@ -818,7 +844,7 @@ export class RuleApplicationError extends AnnetteError {
   getDetails(): string {
     let details = `
       Failed to apply rule: ${this.message}
-      Rule: ${this.rule.name} (${this.rule.type})
+      Rule: ${this.rule.name}
     `;
     
     if (this.agent1 && this.port1) {
@@ -872,7 +898,7 @@ export const DEFAULT_OPTIONS: AnnetteOptions = {
     enableObjectPooling: true,
     maxPoolSize: 100
   },
-  numWorkers: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4,
+  numWorkers: (typeof navigator !== 'undefined') ? navigator.hardwareConcurrency || 4 : 4,
   workerScriptUrl: ''
 };
 
@@ -882,7 +908,7 @@ export const DEFAULT_OPTIONS: AnnetteOptions = {
 export function createOptimizedNetwork(
   network: INetwork, 
   options: AnnetteOptions = {}
-): INetwork {
+): OptimizedNetwork {
   // Merge with default options
   const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
   
@@ -894,9 +920,14 @@ export function createOptimizedNetwork(
   const parallelProcessing = mergedOptions.enableParallelProcessing && mergedOptions.workerScriptUrl ?
     new ParallelProcessing(mergedOptions.workerScriptUrl, mergedOptions.numWorkers) : undefined;
   
+  // Enable parallel processing if available
+  if (parallelProcessing && parallelProcessing.isAvailable()) {
+    console.log('Parallel processing enabled with', mergedOptions.numWorkers, 'workers');
+  }
+  
   // Initialize the rule index with existing rules
-  if (ruleIndex) {
-    for (const rule of network.rules) {
+  if (ruleIndex && network.getAllRules) {
+    for (const rule of network.getAllRules()) {
       ruleIndex.addRule(rule);
     }
   }
@@ -906,7 +937,7 @@ export function createOptimizedNetwork(
     get(target, prop, receiver) {
       // Intercept specific methods
       if (prop === 'addRule' && ruleIndex) {
-        return function addRule(rule: IRule) {
+        return function addRule(rule: AnyRule) {
           // Add rule to index
           ruleIndex.addRule(rule);
           // Call original method
@@ -915,9 +946,11 @@ export function createOptimizedNetwork(
       }
       
       if (prop === 'removeRule' && ruleIndex) {
-        return function removeRule(rule: IRule) {
+        return function removeRule(rule: AnyRule | string) {
           // Remove rule from index
-          ruleIndex.removeRule(rule);
+          if (typeof rule !== 'string') {
+            ruleIndex.removeRule(rule);
+          }
           // Call original method
           return target.removeRule(rule);
         };
@@ -928,9 +961,11 @@ export function createOptimizedNetwork(
           // Call original method
           const connection = target.connectPorts(port1, port2);
           // Track connection
-          if (connection) {
+          if (connection && connectionTracker) {
+            // Generate a unique key for this connection
+            const connectionKey = `${port1.agent._agentId}-${port1.name}:${port2.agent._agentId}-${port2.name}`;
             connectionTracker.addConnection(
-              connection.key,
+              connectionKey,
               port1.agent._agentId,
               port2.agent._agentId
             );
@@ -960,8 +995,13 @@ export function createOptimizedNetwork(
               
               // Process each dirty connection
               for (const connectionKey of dirtyConnections) {
-                // Find the connection
-                const connection = target.connections.find(c => c.key === connectionKey);
+                // Try to find the connection in available connections
+                const allConnections = target.getAllConnections ? target.getAllConnections() : (target as any)._connections || [];
+                const connection = allConnections.find((c: any) => {
+                  const key = `${c.source._agentId}-${c.source.name}:${c.destination._agentId}-${c.destination.name}`;
+                  return key === connectionKey;
+                });
+                
                 if (!connection) {
                   connectionTracker.removeConnection(connectionKey);
                   continue;
@@ -969,22 +1009,30 @@ export function createOptimizedNetwork(
                 
                 // Find applicable rules
                 const rules = ruleIndex.findRules(
-                  connection.from.agent,
-                  connection.from,
-                  connection.to.agent,
-                  connection.to
+                  connection.source,
+                  connection.source,
+                  connection.destination,
+                  connection.destination
                 );
                 
                 // Apply the first matching rule
                 if (rules.length > 0) {
                   try {
-                    // Apply the rule
-                    const result = target.applyRule(rules[0], connection);
+                    // Apply the rule if method exists
+                    let result;
+                    if ((target as any).applyRule) {
+                      result = (target as any).applyRule(rules[0], connection);
+                    } else if (target.step) {
+                      // Fallback to step method
+                      result = target.step();
+                    }
+                    
                     if (result) {
                       iterationChanged = true;
                       
                       // Mark affected agents as dirty
-                      for (const agent of result.affectedAgents || []) {
+                      const affectedAgents = result.affectedAgents || [];
+                      for (const agent of affectedAgents) {
                         if (isAgent(agent) && connectionTracker) {
                           connectionTracker.markAgentDirty(agent._agentId);
                         }
@@ -1020,13 +1068,3 @@ export function createOptimizedNetwork(
   
   return optimizedNetwork;
 }
-
-// Export all optimization utilities
-export {
-  RuleIndex,
-  ConnectionTracker,
-  StructuralSharing,
-  MemoryManager,
-  ParallelProcessing,
-  createOptimizedNetwork
-};

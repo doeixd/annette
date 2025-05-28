@@ -6,12 +6,11 @@
  * 2. Specialized ports (sync/remote) for network boundaries
  * 3. Serialization and deserialization of network state changes
  */
-import { Agent, IAgent, AgentId } from "./agent";
+import { Agent, IAgent } from "./agent";
 import { Network, INetwork, ChangeHistoryEntry } from "./network";
-import { Port, IPort } from "./port";
-import { ActionRule, RuleCommand } from "./rule";
-import { UpdateOperation, Updates, Updater, UpdaterValue } from "./updater";
-import { AgentState, ConnectionState, NetworkSnapshot } from "./timetravel";
+import { Port } from "./port";
+import { ActionRule } from "./rule";
+import { AgentState, NetworkSnapshot } from "./timetravel";
 
 // Sync-related types
 export type SyncOperation = {
@@ -131,12 +130,22 @@ export function createSyncOperation(
  * @returns A serializable representation of the agent
  */
 export function serializeAgent(agent: IAgent): AgentState {
+  const ports: {[portName: string]: {name: string, type: string}} = {};
+  
+  for (const [portName, port] of Object.entries(agent.ports)) {
+    ports[portName] = {
+      name: port.name,
+      type: port.type
+    };
+  }
+
   return {
     id: agent._agentId,
     name: agent.name,
     type: agent.type,
     value: JSON.parse(JSON.stringify(agent.value)), // Deep clone to ensure serializability
-    ports: Object.keys(agent.ports)
+    // ports: (agent.ports)
+    ports,
   };
 }
 
@@ -160,55 +169,62 @@ export function serializeChange(change: ChangeHistoryEntry): any {
  * @param network The network to register rules with
  */
 export function registerSyncRules(network: INetwork): void {
-  // Rule for handling incoming remote updates
-  network.addRule(ActionRule(
-    { name: "Remote-Local", type: "action" },
-    { 
-      agentName1: "Remote", 
-      portName1: "remote", 
-      agentName2: "Constructor", 
-      portName2: "sync" 
-    },
-    (remote, local, network) => {
-      // Apply the remote update to the local agent
-      local.value = {
-        ...local.value,
-        ...remote.value
-      };
-      
-      // Return both agents
-      return [remote, local];
-    }
-  ));
+  // Note: ActionRules need actual port references, so they should be added 
+  // when specific agents are available. These rules serve as templates.
   
-  // Rule for collecting local changes and preparing them for sync
-  network.addRule(ActionRule(
-    { name: "Sync-Collector", type: "action" },
-    { 
-      agentName1: "Sync", 
-      portName1: "sync", 
-      agentName2: "Constructor", 
-      portName2: "sync" 
-    },
-    (sync, local, network) => {
-      // Create an update operation for the local agent
-      const operation = createSyncOperation(
-        'agent-update',
-        {
-          agentId: local._agentId,
-          value: JSON.parse(JSON.stringify(local.value))
+  // Helper function to add rule when Remote and target agents are connected
+  const addRemoteUpdateRule = (remoteAgent: IAgent, targetAgent: IAgent) => {
+    if (remoteAgent.type === "Remote" && remoteAgent.ports.remote && targetAgent.ports.sync) {
+      network.addRule(ActionRule(
+        remoteAgent.ports.remote,
+        targetAgent.ports.sync,
+        (remote: IAgent, local: IAgent) => {
+          // Apply the remote update to the local agent
+          local.value = {
+            ...local.value,
+            ...remote.value
+          };
+          
+          // Return both agents
+          return [remote, local];
         },
-        sync.value.sourceId
-      );
-      
-      // Add to sync operations
-      sync.value.operations.push(operation);
-      sync.value.lastSyncTimestamp = Date.now();
-      
-      // Return both agents
-      return [sync, local];
+        "Remote-Local"
+      ));
     }
-  ));
+  };
+
+  // Helper function to add rule when Sync and target agents are connected  
+  const addSyncCollectorRule = (syncAgent: IAgent, targetAgent: IAgent) => {
+    if (syncAgent.type === "Sync" && syncAgent.ports.sync && targetAgent.ports.sync) {
+      network.addRule(ActionRule(
+        syncAgent.ports.sync,
+        targetAgent.ports.sync,
+        (sync: IAgent, local: IAgent) => {
+          // Create an update operation for the local agent
+          const operation = createSyncOperation(
+            'agent-update',
+            {
+              agentId: local._agentId,
+              value: JSON.parse(JSON.stringify(local.value))
+            },
+            sync.value.sourceId
+          );
+          
+          // Add to sync operations
+          sync.value.operations.push(operation);
+          sync.value.lastSyncTimestamp = Date.now();
+          
+          // Return both agents
+          return [sync, local];
+        },
+        "Sync-Collector"
+      ));
+    }
+  };
+
+  // Store these helper functions on the network for later use
+  (network as any)._addRemoteUpdateRule = addRemoteUpdateRule;
+  (network as any)._addSyncCollectorRule = addSyncCollectorRule;
 }
 
 /**
@@ -292,7 +308,7 @@ function applyNetworkSnapshot(network: INetwork, snapshot: NetworkSnapshot): voi
   // Recreate agents
   const agentsById = new Map<string, IAgent>();
   
-  for (const agentState of snapshot.agents) {
+  for (const [, agentState] of snapshot.agentStates) {
     const agent = Agent(agentState.name, agentState.value);
     Object.defineProperty(agent, '_agentId', { value: agentState.id });
     network.addAgent(agent);
@@ -300,13 +316,13 @@ function applyNetworkSnapshot(network: INetwork, snapshot: NetworkSnapshot): voi
   }
   
   // Recreate connections
-  for (const connection of snapshot.connections) {
-    const sourceAgent = agentsById.get(connection.sourceAgentId);
-    const destAgent = agentsById.get(connection.destAgentId);
+  for (const [, connectionState] of snapshot.connections) {
+    const sourceAgent = agentsById.get(connectionState.sourceAgentId);
+    const destAgent = agentsById.get(connectionState.destinationAgentId);
     
     if (sourceAgent && destAgent) {
-      const sourcePort = sourceAgent.ports[connection.sourcePortName];
-      const destPort = destAgent.ports[connection.destPortName];
+      const sourcePort = sourceAgent.ports[connectionState.sourcePortName];
+      const destPort = destAgent.ports[connectionState.destinationPortName];
       
       if (sourcePort && destPort) {
         network.connectPorts(sourcePort, destPort);

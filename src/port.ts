@@ -1,4 +1,6 @@
 import { AgentId, IAgent } from "./agent";
+import { IConnection } from "./connection";
+import { Action } from "./rule";
 
 export type PortTypes = "main" | "aux" | "wait" | "hold" | "sync" | "remote";
 export type PortName = string;
@@ -73,13 +75,16 @@ export function isPort(port: any): port is IPort<string, PortTypes> {
 
 export interface IBoundPort<
   A extends IAgent = IAgent,
-  Name extends string = string,
-  Type extends PortTypes = PortTypes,
+  N extends string = string,
+  T extends PortTypes = PortTypes
 > {
-  name: Name;
-  type: Type;
+  name: N;
+  type: T;
   agent: A;
 }
+
+// Helper type to ensure port is valid for an agent
+export type ValidPortFor<A extends IAgent> = A["ports"][keyof A["ports"]];
 
 export function getPortInstanceKey<P extends IBoundPort>(port: P): PortInstanceKey {
   return `${port.agent._agentId}#${port.name}`;
@@ -532,4 +537,16 @@ export function addMainPortIfNotExists<
     PortsHasMainPort<P>;
 
   return n;
+}
+
+interface IRule<
+  Name extends string = string,
+  S extends IAgent = IAgent,
+  D extends IAgent = IAgent,
+  SP extends S["ports"][keyof S["ports"]] = S["ports"][keyof S["ports"]],
+  DP extends D["ports"][keyof D["ports"]] = D["ports"][keyof D["ports"]],
+> {
+  name: Name;
+  connection: IConnection<string, S, D, SP, DP>;
+  action: Action<S, D>;
 }

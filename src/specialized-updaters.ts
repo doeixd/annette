@@ -1,569 +1,547 @@
 /**
  * Specialized Updaters for Complex Data Structures
- * 
- * This module provides:
- * 1. Specialized UpdateAgent types for different data structures (map, list, text, counter)
- * 2. Specialized rules for efficient updates to complex data structures
- * 3. Helper functions for creating shared data structures
- * 4. CRDT-like operations for collaborative editing
  */
-import { Agent, IAgent } from "./agent";
+import { Agent, IAgent, AgentName } from "./agent";
 import { INetwork } from "./network";
 import { Port } from "./port";
-import { ActionRule } from "./rule";
+import { ActionRule, IActionRule } from "./rule";
 import { UpdateOperation, Updater, UpdaterValue, Updates, applyUpdate } from "./updater";
 
-// Specialized updater types
+// ========== Type Definitions ==========
+
 export type DataType = 'map' | 'list' | 'text' | 'counter';
 
-export interface SpecializedUpdaterValue<T = any> extends UpdaterValue<T> {
+export interface SpecializedUpdaterValue<TValue = any, TOpType = any> extends UpdaterValue<TValue> {
   dataType: DataType;
-  parentPath?: string[];
+  operationType: TOpType;
   vectorClock?: Record<string, number>;
+  crdtMetadata?: any;
+  metadata?: Record<string, any>;
 }
 
-// Map operations
-export interface MapOperation<T = any> {
+export interface MapOperationDescriptor<V = any> {
   type: 'set' | 'delete' | 'merge';
-  key: string;
-  value?: T;
+  key: string; // Key for 'set' and 'delete'
+  value?: V | Partial<Record<string, V>>; // Value for 'set' (type V), or object for 'merge' (type Partial<Record<string,V>>)
 }
 
-// List operations
-export interface ListOperation<T = any> {
-  type: 'insert' | 'delete' | 'set';
-  index: number;
-  value?: T;
+export interface ListOperationDescriptor<T = any> {
+  type: 'insert' | 'delete' | 'set' | 'push' | 'pop';
+  index?: number;
+  value?: T | T[];
 }
 
-// Text operations
-export interface TextOperation {
-  type: 'insert' | 'delete';
+export interface TextOperationDescriptor {
+  type: 'insert' | 'delete' | 'replace' | 'set';
   position: number;
-  value?: string;
+  text?: string;
   length?: number;
-  id?: string;
 }
 
-// Counter operations
-export interface CounterOperation {
+export interface CounterOperationDescriptor {
   type: 'increment' | 'decrement' | 'set';
   value: number;
 }
 
-/**
- * Create a specialized updater agent for maps
- * 
- * @param operation The map operation to perform
- * @param parentPath Path to the parent object (empty for root)
- * @param metadata Optional metadata
- * @returns A specialized updater agent for maps
- */
-export function MapUpdater<T = any>(
-  operation: MapOperation<T>,
-  parentPath: string[] = [],
+// ========== Specialized Updater Agent Factories ==========
+export function MapUpdater<V = any>(
+  descriptor: MapOperationDescriptor<V>,
+  targetPath: string[] = [], // Path to the map object itself
   metadata?: Record<string, any>
-): IAgent<"Updater", SpecializedUpdaterValue<T>> {
-  // Convert to standard update operation
-  let updateOperation: UpdateOperation<T>;
-  
-  switch (operation.type) {
+): IAgent<"Updater", SpecializedUpdaterValue<Record<string, V>, MapOperationDescriptor['type']>> {
+  let operationForAgent: UpdateOperation<Record<string, V>>;
+  // pathForApplyUpdate will be the targetPath for custom/merge, or targetPath + key for generic set/delete if used.
+  // Since we use custom for set/delete to make operation be UpdateOperation<Record<string,V>>,
+  // pathForApplyUpdate will always be targetPath.
+  const pathForApplyUpdate = [...targetPath];
+
+  switch (descriptor.type) {
     case 'set':
-      updateOperation = Updates.set(operation.value as T);
+      if (descriptor.value === undefined) throw new Error("Map 'set' operation requires a value.");
+      operationForAgent = Updates.custom<Record<string, V>>((currentMap) => {
+        const mapToUpdate = (typeof currentMap === 'object' && currentMap !== null) ? currentMap : {};
+        return {
+          ...(mapToUpdate as Record<string, V>),
+          [descriptor.key]: descriptor.value as V, // Value is of type V
+        };
+      });
       break;
     case 'delete':
-      updateOperation = Updates.delete(operation.key);
+      operationForAgent = Updates.custom<Record<string, V>>((currentMap) => {
+        if (typeof currentMap !== 'object' || currentMap === null) return currentMap; // Or return {}
+        const { [descriptor.key]: _, ...rest } = currentMap as Record<string, V>;
+        return rest as Record<string, V>;
+      });
       break;
     case 'merge':
-      updateOperation = Updates.merge(operation.value as any);
+      if (descriptor.value === undefined || typeof descriptor.value !== 'object') throw new Error("Map 'merge' operation requires an object value.");
+      operationForAgent = Updates.merge(descriptor.value as Partial<Record<string, V>>);
       break;
+    default:
+      const exhaustiveCheckSet: never = descriptor.type;
+      throw new Error(`Unknown map operation type: ${exhaustiveCheckSet}`);
   }
-  
-  // Calculate target path
-  const targetPath = [...parentPath, operation.key];
-  
-  return Agent("Updater", {
-    targetPath,
-    operation: updateOperation,
+
+  const agentValue: SpecializedUpdaterValue<Record<string, V>, MapOperationDescriptor['type']> = {
+    targetPath: pathForApplyUpdate,
+    operation: operationForAgent,
     timestamp: Date.now(),
     source: metadata?.source,
     dataType: 'map',
-    parentPath,
-    metadata
-  }, {
-    main: Port("main", "main"),
-    // Additional ports for specialized operations
-    out1: Port("out1", "aux"),
-    out2: Port("out2", "aux")
-  });
+    operationType: descriptor.type,
+    metadata,
+  };
+
+  return Agent("Updater", agentValue, { main: Port("main", "main") });
 }
 
-/**
- * Create a specialized updater agent for lists
- * 
- * @param operation The list operation to perform
- * @param parentPath Path to the parent object (empty for root)
- * @param metadata Optional metadata
- * @returns A specialized updater agent for lists
- */
 export function ListUpdater<T = any>(
-  operation: ListOperation<T>,
-  parentPath: string[] = [],
+  descriptor: ListOperationDescriptor<T>,
+  targetPath: string[] = [],
   metadata?: Record<string, any>
-): IAgent<"Updater", SpecializedUpdaterValue<T>> {
-  // Convert to standard update operation
-  let updateOperation: UpdateOperation<T>;
-  
-  switch (operation.type) {
+): IAgent<"Updater", SpecializedUpdaterValue<T[], ListOperationDescriptor['type']>> {
+  let updateOperation: UpdateOperation<T[]>;
+
+  switch (descriptor.type) {
     case 'insert':
-      updateOperation = Updates.insert(operation.index, operation.value as any);
+      if (descriptor.index === undefined || descriptor.value === undefined) throw new Error("List 'insert' operation requires index and value.");
+      // Updates.insert's value generic should be T (type of item), not T[] (type of list)
+      updateOperation = Updates.insert(descriptor.index, descriptor.value as T) as UpdateOperation<T[]>; // Cast needed if Updates.insert returns UpdateOperation<T>
+      // A better Updates.insert would return an UpdateOperation<T[]> directly
+      // For now, let's use custom to be explicit about T[]
+      updateOperation = Updates.custom<T[]>((list: T[]) => {
+        if (!Array.isArray(list)) return [];
+        const newList = [...list];
+        newList.splice(descriptor.index!, 0, descriptor.value as T);
+        return newList;
+      });
       break;
     case 'delete':
-      // For delete, we create a custom operation that removes an item at a specific index
-      updateOperation = Updates.custom((list: any[]) => {
+      if (descriptor.index === undefined) throw new Error("List 'delete' operation requires index.");
+      updateOperation = Updates.custom<T[]>((list: T[]) => {
+        if (!Array.isArray(list)) return list;
         const newList = [...list];
-        newList.splice(operation.index, 1);
+        if (descriptor.index! >= 0 && descriptor.index! < newList.length) {
+          newList.splice(descriptor.index!, 1);
+        }
         return newList;
       });
       break;
     case 'set':
-      // For set, we create a custom operation that sets an item at a specific index
-      updateOperation = Updates.custom((list: any[]) => {
+      if (descriptor.index === undefined || descriptor.value === undefined) throw new Error("List 'set' operation requires index and value.");
+      updateOperation = Updates.custom<T[]>((list: T[]) => {
+        if (!Array.isArray(list)) return list;
         const newList = [...list];
-        newList[operation.index] = operation.value;
+        if (descriptor.index! >= 0 && descriptor.index! < newList.length) {
+          newList[descriptor.index!] = descriptor.value as T;
+        }
         return newList;
       });
       break;
+    case 'push':
+      if (descriptor.value === undefined) throw new Error("List 'push' operation requires value.");
+      updateOperation = Updates.custom<T[]>((list: T[]) => {
+        if (!Array.isArray(list)) return [];
+        const valuesToPush = Array.isArray(descriptor.value) ? descriptor.value : [descriptor.value as T];
+        return [...list, ...valuesToPush];
+      });
+      break;
+    case 'pop':
+      updateOperation = Updates.custom<T[]>((list: T[]) => {
+        if (!Array.isArray(list) || list.length === 0) return list;
+        const newList = [...list];
+        newList.pop();
+        return newList;
+      });
+      break;
+    default:
+      const exhaustiveCheckList: never = descriptor.type;
+      throw new Error(`Unknown list operation type: ${exhaustiveCheckList}`);
   }
-  
-  return Agent("Updater", {
-    targetPath: parentPath,
+  const agentValue: SpecializedUpdaterValue<T[], ListOperationDescriptor['type']> = {
+    targetPath: targetPath,
     operation: updateOperation,
     timestamp: Date.now(),
     source: metadata?.source,
     dataType: 'list',
-    parentPath,
-    metadata
-  }, {
-    main: Port("main", "main"),
-    // Additional ports for specialized operations
-    out1: Port("out1", "aux"),
-    out2: Port("out2", "aux")
-  });
+    operationType: descriptor.type,
+    metadata,
+  };
+  return Agent("Updater", agentValue, { main: Port("main", "main") });
 }
 
-/**
- * Create a specialized updater agent for text
- * 
- * @param operation The text operation to perform
- * @param parentPath Path to the parent object (empty for root)
- * @param metadata Optional metadata
- * @returns A specialized updater agent for text
- */
 export function TextUpdater(
-  operation: TextOperation,
-  parentPath: string[] = [],
+  descriptor: TextOperationDescriptor,
+  targetPath: string[] = [],
   metadata?: Record<string, any>
-): IAgent<"Updater", SpecializedUpdaterValue<string>> {
-  // Convert to standard update operation
+): IAgent<"Updater", SpecializedUpdaterValue<string, TextOperationDescriptor['type']>> {
   let updateOperation: UpdateOperation<string>;
-  
-  switch (operation.type) {
+  const pos = descriptor.position;
+
+  switch (descriptor.type) {
     case 'insert':
-      // For insert, we create a custom operation that inserts text at a specific position
-      updateOperation = Updates.custom((text: string) => {
-        return text.substring(0, operation.position) + 
-               (operation.value || '') + 
-               text.substring(operation.position);
+      if (descriptor.text === undefined) throw new Error("Text 'insert' operation requires text.");
+      updateOperation = Updates.custom<string>((currentText: string) => {
+        if (typeof currentText !== 'string') return "";
+        return currentText.substring(0, pos) + descriptor.text + currentText.substring(pos);
       });
       break;
     case 'delete':
-      // For delete, we create a custom operation that removes text at a specific position
-      updateOperation = Updates.custom((text: string) => {
-        const length = operation.length || 1;
-        return text.substring(0, operation.position) + 
-               text.substring(operation.position + length);
+      const len = descriptor.length === undefined ? 1 : descriptor.length;
+      if (len < 0) throw new Error("Text 'delete' operation length cannot be negative.");
+      updateOperation = Updates.custom<string>((currentText: string) => {
+        if (typeof currentText !== 'string') return "";
+        return currentText.substring(0, pos) + currentText.substring(pos + len);
       });
       break;
+    case 'replace':
+      if (descriptor.text === undefined || descriptor.length === undefined) throw new Error("Text 'replace' operation requires text and length.");
+      const replaceLen = descriptor.length;
+      if (replaceLen < 0) throw new Error("Text 'replace' operation length cannot be negative.");
+      updateOperation = Updates.custom<string>((currentText: string) => {
+        if (typeof currentText !== 'string') return "";
+        return currentText.substring(0, pos) + descriptor.text + currentText.substring(pos + replaceLen);
+      });
+      break;
+    case 'set':
+      if (descriptor.text === undefined) throw new Error("Text 'set' operation requires text.");
+      updateOperation = Updates.set(descriptor.text);
+      break;
+    default:
+      const exhaustiveCheckText: never = descriptor.type;
+      throw new Error(`Unknown text operation type: ${exhaustiveCheckText}`);
   }
-  
-  return Agent("Updater", {
-    targetPath: parentPath,
+
+  const agentValue: SpecializedUpdaterValue<string, TextOperationDescriptor['type']> = {
+    targetPath: targetPath,
     operation: updateOperation,
     timestamp: Date.now(),
     source: metadata?.source,
     dataType: 'text',
-    parentPath,
-    metadata: {
-      ...metadata,
-      textOperation: operation
-    }
-  }, {
-    main: Port("main", "main"),
-    // Additional ports for specialized operations
-    out1: Port("out1", "aux"),
-    out2: Port("out2", "aux")
-  });
+    operationType: descriptor.type,
+    crdtMetadata: metadata?.crdtOpId ? { opId: metadata.crdtOpId, textOperation: descriptor, ...metadata } : undefined,
+    metadata: { ...metadata, textOperation: descriptor }, // Store original descriptor for CRDT rule
+  };
+  return Agent("Updater", agentValue, { main: Port("main", "main") });
 }
 
-/**
- * Create a specialized updater agent for counters
- * 
- * @param operation The counter operation to perform
- * @param parentPath Path to the parent object (empty for root)
- * @param metadata Optional metadata
- * @returns A specialized updater agent for counters
- */
 export function CounterUpdater(
-  operation: CounterOperation,
-  parentPath: string[] = [],
+  descriptor: CounterOperationDescriptor,
+  targetPath: string[] = [],
   metadata?: Record<string, any>
-): IAgent<"Updater", SpecializedUpdaterValue<number>> {
-  // Convert to standard update operation
+): IAgent<"Updater", SpecializedUpdaterValue<number, CounterOperationDescriptor['type']>> {
   let updateOperation: UpdateOperation<number>;
-  
-  switch (operation.type) {
+
+  switch (descriptor.type) {
     case 'increment':
-      updateOperation = Updates.increment(operation.value);
+      updateOperation = Updates.increment(descriptor.value);
       break;
     case 'decrement':
-      updateOperation = Updates.increment(-operation.value);
+      updateOperation = Updates.increment(-descriptor.value);
       break;
     case 'set':
-      updateOperation = Updates.set(operation.value);
+      updateOperation = Updates.set(descriptor.value);
       break;
+    default:
+      const exhaustiveCheckCounter: never = descriptor.type;
+      throw new Error(`Unknown counter operation type: ${exhaustiveCheckCounter}`);
   }
-  
-  return Agent("Updater", {
-    targetPath: parentPath,
+  const agentValue: SpecializedUpdaterValue<number, CounterOperationDescriptor['type']> = {
+    targetPath: targetPath,
     operation: updateOperation,
     timestamp: Date.now(),
     source: metadata?.source,
     dataType: 'counter',
-    parentPath,
-    metadata
-  }, {
-    main: Port("main", "main"),
-    // Additional ports for specialized operations
-    out1: Port("out1", "aux"),
-    out2: Port("out2", "aux")
-  });
+    operationType: descriptor.type,
+    metadata,
+  };
+  return Agent("Updater", agentValue, { main: Port("main", "main") });
+}
+// ========== Shared Data Agent Factories ==========
+
+export interface SharedDataMetadata {
+  sourceNetworkId?: string;
+  lastUpdateFrom?: string;
+  vectorClock?: Record<string, number>;
 }
 
-/**
- * Create a shared map agent
- * 
- * @param initialValue Initial map value
- * @param metadata Optional metadata
- * @returns A shared map agent
- */
-export function createSharedMap<T extends Record<string, any> = Record<string, any>>(
-  initialValue: T,
-  metadata?: Record<string, any>
-): IAgent<"SharedMap", T & { __metadata?: Record<string, any> }> {
-  return Agent("SharedMap", {
-    ...initialValue,
-    __metadata: metadata
-  }, {
+export type AgentValueWithMetadata<Data, Meta = SharedDataMetadata> = Data & {
+  __metadata?: Meta;
+};
+
+export function createSharedMap<V = any>(
+  name: "SharedMap",
+  initialValue: Record<string, V> = {},
+  metadata?: SharedDataMetadata
+): IAgent<"SharedMap", AgentValueWithMetadata<Record<string, V>>> {
+  const agentValue = {
+    ...(initialValue),
+    __metadata: metadata || {}
+  } as AgentValueWithMetadata<Record<string, V>>;
+
+  return Agent(name, agentValue, {
     main: Port("main", "main"),
     sync: Port("sync", "sync")
   });
 }
 
-/**
- * Create a shared list agent
- * 
- * @param initialValue Initial list value
- * @param metadata Optional metadata
- * @returns A shared list agent
- */
 export function createSharedList<T = any>(
+  name: "SharedList",
   initialValue: T[] = [],
-  metadata?: Record<string, any>
-): IAgent<"SharedList", { items: T[], __metadata?: Record<string, any> }> {
-  return Agent("SharedList", {
+  metadata?: SharedDataMetadata
+): IAgent<"SharedList", AgentValueWithMetadata<{ items: T[] }>> {
+  const agentValue: AgentValueWithMetadata<{ items: T[] }> = {
     items: initialValue,
-    __metadata: metadata
-  }, {
+    __metadata: metadata || {}
+  };
+  return Agent(name, agentValue, {
     main: Port("main", "main"),
     sync: Port("sync", "sync")
   });
 }
 
-/**
- * Create a shared text agent
- * 
- * @param initialValue Initial text value
- * @param metadata Optional metadata
- * @returns A shared text agent
- */
 export function createSharedText(
+  name: "SharedText",
   initialValue: string = "",
-  metadata?: Record<string, any>
-): IAgent<"SharedText", { text: string, __metadata?: Record<string, any> }> {
-  return Agent("SharedText", {
+  metadata?: SharedDataMetadata
+): IAgent<"SharedText", AgentValueWithMetadata<{ text: string }>> {
+  const agentValue: AgentValueWithMetadata<{ text: string }> = {
     text: initialValue,
-    __metadata: metadata
-  }, {
+    __metadata: metadata || {}
+  };
+  return Agent(name, agentValue, {
     main: Port("main", "main"),
     sync: Port("sync", "sync")
   });
 }
 
-/**
- * Create a shared counter agent
- * 
- * @param initialValue Initial counter value
- * @param metadata Optional metadata
- * @returns A shared counter agent
- */
 export function createSharedCounter(
+  name: "SharedCounter",
   initialValue: number = 0,
-  metadata?: Record<string, any>
-): IAgent<"SharedCounter", { value: number, __metadata?: Record<string, any> }> {
-  return Agent("SharedCounter", {
+  metadata?: SharedDataMetadata
+): IAgent<"SharedCounter", AgentValueWithMetadata<{ value: number }>> {
+  const agentValue: AgentValueWithMetadata<{ value: number }> = {
     value: initialValue,
-    __metadata: metadata
-  }, {
+    __metadata: metadata || {}
+  };
+  return Agent(name, agentValue, {
     main: Port("main", "main"),
     sync: Port("sync", "sync")
   });
 }
 
-/**
- * Register specialized updater rules for efficient updates
- * @param network The network to register rules with
- */
+// ========== Rule Registration ==========
+
 export function registerSpecializedUpdaterRules(network: INetwork): void {
-  // Rule for map updaters
-  network.addRule(ActionRule(
-    { name: "MapUpdater-Map", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "SharedMap", 
-      portName2: "main" 
-    },
-    (updater, map, network) => {
-      const updaterValue = updater.value as SpecializedUpdaterValue;
-      
-      // Only handle if this is a map updater
-      if (updaterValue.dataType !== 'map') {
-        return undefined; // Let another rule handle it
-      }
-      
-      // Apply the update
-      const newValue = applyUpdate(map.value, updaterValue.targetPath, updaterValue.operation);
-      map.value = newValue;
-      
-      // Create sub-updaters for nested properties if needed
-      if (updaterValue.operation.type === 'merge') {
-        const mergeValue = updaterValue.operation.value;
-        
-        // For each property in the merge, create a sub-updater
-        for (const [key, value] of Object.entries(mergeValue)) {
-          if (typeof value === 'object' && value !== null) {
-            // Create a sub-updater for this nested property
-            const subUpdater = MapUpdater(
-              { type: 'set', key, value },
-              updaterValue.targetPath,
-              { ...updaterValue.metadata, parentUpdate: updaterValue }
-            );
-            
-            network.addAgent(subUpdater);
-            
-            // If map has auxiliary ports, connect the sub-updater
-            if (map.ports.out1) {
-              network.connectPorts(subUpdater.ports.main, map.ports.out1);
-            }
+
+  const createDummySharedAgent = <
+    Name extends "SharedMap" | "SharedList" | "SharedText" | "SharedCounter",
+    V = any
+  >(
+    name: Name,
+    initialDataForDummy?:
+      Name extends "SharedMap" ? Record<string, V> :
+      Name extends "SharedList" ? { items: V[] } :
+      Name extends "SharedText" ? { text: string } :
+      Name extends "SharedCounter" ? { value: number } :
+      any
+  ): IAgent<Name, AgentValueWithMetadata<
+    Name extends "SharedMap" ? Record<string, V> :
+    Name extends "SharedList" ? { items: V[] } :
+    Name extends "SharedText" ? { text: string } :
+    Name extends "SharedCounter" ? { value: number } :
+    any
+  >> => {
+    let dataContentPart: any;
+
+    if (name === "SharedMap") {
+      dataContentPart = initialDataForDummy || ({} as Record<string, V>);
+    } else if (name === "SharedList") {
+      dataContentPart = { items: (initialDataForDummy as { items: V[] } | undefined)?.items || [] };
+    } else if (name === "SharedText") {
+      dataContentPart = { text: (initialDataForDummy as { text: string } | undefined)?.text || "" };
+    } else if (name === "SharedCounter") {
+      dataContentPart = { value: (initialDataForDummy as { value: number } | undefined)?.value || 0 };
+    } else {
+      const exhaustiveNameCheck: never = name;
+      throw new Error(`Unhandled agent name in createDummySharedAgent: ${exhaustiveNameCheck}`);
+    }
+
+    const agentValueForFactory: AgentValueWithMetadata<typeof dataContentPart> = {
+      ...(dataContentPart as object),
+      __metadata: {}
+    };
+    
+    return Agent(name, agentValueForFactory as AgentValueWithMetadata<
+      Name extends "SharedMap" ? Record<string, V> :
+      Name extends "SharedList" ? { items: V[] } :
+      Name extends "SharedText" ? { text: string } :
+      Name extends "SharedCounter" ? { value: number } :
+      any
+    >, { main: Port("main", "main"), sync: Port("sync", "sync") });
+  };
+
+  const dummyUpdaterForRules = Updater(targetPath, {} as any) as IAgent<"Updater", SpecializedUpdaterValue<any,any>>;
+
+
+  const createSpecializedRule = <
+    SharedAgentName extends "SharedMap" | "SharedList" | "SharedText" | "SharedCounter"
+  >(
+    sharedAgentName: SharedAgentName,
+    expectedDataType: DataType,
+    dataPathWithinAgentValue: string[]
+  ): IActionRule => {
+
+    type ActionSharedAgentParam =
+      SharedAgentName extends "SharedMap" ? IAgent<"SharedMap", AgentValueWithMetadata<Record<string, any>>> :
+      SharedAgentName extends "SharedList" ? IAgent<"SharedList", AgentValueWithMetadata<{ items: any[] }>> :
+      SharedAgentName extends "SharedText" ? IAgent<"SharedText", AgentValueWithMetadata<{ text: string }>> :
+      SharedAgentName extends "SharedCounter" ? IAgent<"SharedCounter", AgentValueWithMetadata<{ value: number }>> :
+      IAgent<SharedAgentName, any>;
+
+    const dummyShared = (sharedAgentName === "SharedMap")
+      ? createDummySharedAgent("SharedMap", {} as Record<string, any>)
+      : createDummySharedAgent(sharedAgentName);
+
+    return ActionRule(
+      dummyUpdaterForRules.ports.main,
+      dummyShared.ports.main,
+      (updater, sharedAgentUnTyped, _net) => {
+        const sharedAgent = sharedAgentUnTyped as ActionSharedAgentParam;
+        const updaterValueFromAgent = updater.value as SpecializedUpdaterValue<any, any>;
+
+        if (updater.name !== "Updater" || sharedAgent.name !== sharedAgentName || updaterValueFromAgent.dataType !== expectedDataType) {
+          return undefined;
+        }
+
+        const fullPathToData = dataPathWithinAgentValue.length === 0
+          ? updaterValueFromAgent.targetPath
+          : [...dataPathWithinAgentValue, ...updaterValueFromAgent.targetPath];
+
+        try {
+          if (sharedAgent.value === undefined || sharedAgent.value === null) {
+            console.error(`Rule ${sharedAgentName}Updater: Target agent value is undefined/null.`);
+            return [sharedAgent];
           }
+          const newRootAgentValue = applyUpdate(sharedAgent.value, fullPathToData, updaterValueFromAgent.operation);
+          sharedAgent.value = newRootAgentValue;
+
+          if (updaterValueFromAgent.vectorClock && sharedAgent.value?.__metadata) {
+            console.log("Vector clock update would happen here for:", sharedAgentName);
+          }
+
+        } catch (error) {
+          console.error(`Error applying update in rule ${sharedAgentName}Updater:`, error,
+            "\nUpdater:", updaterValueFromAgent, "\nTarget:", sharedAgent.value, "\nPath:", fullPathToData);
+          return [sharedAgent];
         }
-      }
-      
-      return [map];
-    }
-  ));
-  
-  // Rule for list updaters
+
+        return [sharedAgent];
+      },
+      `SpecializedUpdater-${sharedAgentName}`
+    );
+  };
+
+  network.addRule(createSpecializedRule("SharedMap", 'map', []));
+  network.addRule(createSpecializedRule("SharedList", 'list', ['items']));
+  network.addRule(createSpecializedRule("SharedText", 'text', ['text']));
+  network.addRule(createSpecializedRule("SharedCounter", 'counter', ['value']));
+
+  const dummyDuplicator = Agent("Duplicator" as AgentName, {}, { main: Port("main", "main"), out1: Port("out1", "aux"), out2: Port("out2", "aux") });
   network.addRule(ActionRule(
-    { name: "ListUpdater-List", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "SharedList", 
-      portName2: "main" 
-    },
-    (updater, list, network) => {
-      const updaterValue = updater.value as SpecializedUpdaterValue;
-      
-      // Only handle if this is a list updater
-      if (updaterValue.dataType !== 'list') {
-        return undefined; // Let another rule handle it
-      }
-      
-      // Apply the update
-      const newValue = applyUpdate(list.value, updaterValue.targetPath, updaterValue.operation);
-      list.value = newValue;
-      
-      return [list];
-    }
-  ));
-  
-  // Rule for text updaters
-  network.addRule(ActionRule(
-    { name: "TextUpdater-Text", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "SharedText", 
-      portName2: "main" 
-    },
-    (updater, text, network) => {
-      const updaterValue = updater.value as SpecializedUpdaterValue;
-      
-      // Only handle if this is a text updater
-      if (updaterValue.dataType !== 'text') {
-        return undefined; // Let another rule handle it
-      }
-      
-      // Apply the update
-      const newValue = applyUpdate(text.value, updaterValue.targetPath, updaterValue.operation);
-      text.value = newValue;
-      
-      return [text];
-    }
-  ));
-  
-  // Rule for counter updaters
-  network.addRule(ActionRule(
-    { name: "CounterUpdater-Counter", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "SharedCounter", 
-      portName2: "main" 
-    },
-    (updater, counter, network) => {
-      const updaterValue = updater.value as SpecializedUpdaterValue;
-      
-      // Only handle if this is a counter updater
-      if (updaterValue.dataType !== 'counter') {
-        return undefined; // Let another rule handle it
-      }
-      
-      // Apply the update
-      const newValue = applyUpdate(counter.value, updaterValue.targetPath, updaterValue.operation);
-      counter.value = newValue;
-      
-      return [counter];
-    }
-  ));
-  
-  // Rule for updater-duplicator interaction
-  network.addRule(ActionRule(
-    { name: "Updater-Duplicator", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "Duplicator", 
-      portName2: "main" 
-    },
-    (updater, duplicator, network) => {
-      const updaterValue = updater.value;
-      
-      // Create two new updaters with the same operation
-      const updater1 = Updater(
-        updaterValue.targetPath,
-        updaterValue.operation,
-        updaterValue.metadata
+    dummyUpdaterForRules.ports.main,
+    dummyDuplicator.ports.main,
+    (updater, duplicator, net) => {
+      if (updater.name !== "Updater" || duplicator.name !== "Duplicator") return undefined;
+
+      const updaterValueFromAgent = updater.value as UpdaterValue<any>;
+
+      const newUpdater1 = Updater(
+        updaterValueFromAgent.targetPath,
+        updaterValueFromAgent.operation,
+        updaterValueFromAgent.metadata
       );
-      
-      const updater2 = Updater(
-        updaterValue.targetPath,
-        updaterValue.operation,
-        updaterValue.metadata
+      const newUpdater2 = Updater(
+        updaterValueFromAgent.targetPath,
+        updaterValueFromAgent.operation,
+        updaterValueFromAgent.metadata
       );
-      
-      // Add the new updaters to the network
-      network.addAgent(updater1);
-      network.addAgent(updater2);
-      
-      // Connect updaters to the duplicator's auxiliary ports
-      network.connectPorts(updater1.ports.main, duplicator.ports.out1);
-      network.connectPorts(updater2.ports.main, duplicator.ports.out2);
-      
-      return [duplicator, updater1, updater2];
-    }
-  ));
-  
-  // Rule for specific text CRDT operations
-  network.addRule(ActionRule(
-    { name: "TextCRDT-Text", type: "action" },
-    { 
-      agentName1: "Updater", 
-      portName1: "main", 
-      agentName2: "SharedText", 
-      portName2: "main" 
-    },
-    (updater, text, network) => {
-      const updaterValue = updater.value as SpecializedUpdaterValue;
-      
-      // Only handle if this is a text updater with CRDT metadata
-      if (updaterValue.dataType !== 'text' || !updaterValue.metadata?.textOperation) {
-        return undefined; // Let another rule handle it
+
+      net.addAgent(newUpdater1);
+      net.addAgent(newUpdater2);
+
+      if (duplicator.ports.out1 && duplicator.ports.out2) {
+        net.connectPorts(newUpdater1.ports.main, duplicator.ports.out1);
+        net.connectPorts(newUpdater2.ports.main, duplicator.ports.out2);
+      } else {
+        console.warn("Duplicator agent missing out1 or out2 ports for Updater-Duplicator rule.");
       }
-      
-      const textOp = updaterValue.metadata.textOperation as TextOperation;
-      
-      // If this is a CRDT text operation with an ID
-      if (textOp.id) {
-        // Apply the update with special CRDT handling
-        // This would implement the CRDT logic for text (like Yjs or Automerge)
-        // For simplicity, we're using a basic implementation here
-        let newText = text.value.text;
-        
-        if (textOp.type === 'insert') {
-          newText = newText.substring(0, textOp.position) + 
-                   (textOp.value || '') + 
-                   newText.substring(textOp.position);
-        } else if (textOp.type === 'delete') {
-          const length = textOp.length || 1;
-          newText = newText.substring(0, textOp.position) + 
-                   newText.substring(textOp.position + length);
+
+      return [duplicator, newUpdater1, newUpdater2];
+    },
+    "Updater-Duplicator"
+  ));
+
+  const originalTextOpForDummyCRDT: TextOperationDescriptor = { type: 'insert', position: 0, text: '' };
+  const dummyUpdaterForCRDT = TextUpdater(originalTextOpForDummyCRDT, [], { crdtOpId: "dummyID", textOperation: originalTextOpForDummyCRDT });
+  const dummySharedTextForCRDT = createSharedText("SharedText", "");
+
+  network.addRule(ActionRule(
+    dummyUpdaterForCRDT.ports.main,
+    dummySharedTextForCRDT.ports.main,
+    (updater, sharedTextUntyped, _net) => {
+      const sharedText = sharedTextUntyped as IAgent<"SharedText", AgentValueWithMetadata<{ text: string }>>;
+      const updaterValueFromAgent = updater.value as SpecializedUpdaterValue<string, TextOperationDescriptor['type']>;
+
+      if (updater.name !== "Updater" ||
+        sharedText.name !== "SharedText" ||
+        updaterValueFromAgent.dataType !== 'text' ||
+        !updaterValueFromAgent.crdtMetadata ||
+        !updaterValueFromAgent.crdtMetadata.opId) {
+        return undefined;
+      }
+
+      const crdtOpInfo = updaterValueFromAgent.crdtMetadata;
+      const textOpDesc = updaterValueFromAgent.metadata?.textOperation as TextOperationDescriptor | undefined;
+
+      console.log(`CRDT Text operation ${crdtOpInfo.opId} received for SharedText '${sharedText._agentId}'. Current text: "${sharedText.value?.text ?? ''}". OpDesc:`, textOpDesc);
+
+      if (textOpDesc && sharedText.value) {
+        let newTextValue = sharedText.value.text;
+        // This is a simplified application, real CRDT merge is more complex
+        if (textOpDesc.type === 'insert' && textOpDesc.text !== undefined) {
+          newTextValue = newTextValue.substring(0, textOpDesc.position) + textOpDesc.text + newTextValue.substring(textOpDesc.position);
+        } else if (textOpDesc.type === 'delete' && textOpDesc.length !== undefined && textOpDesc.length >= 0) {
+          newTextValue = newTextValue.substring(0, textOpDesc.position) + newTextValue.substring(textOpDesc.position + textOpDesc.length);
+        } else if (textOpDesc.type === 'replace' && textOpDesc.text !== undefined && textOpDesc.length !== undefined && textOpDesc.length >= 0) {
+          newTextValue = newTextValue.substring(0, textOpDesc.position) + textOpDesc.text + newTextValue.substring(textOpDesc.position + textOpDesc.length);
+        } else if (textOpDesc.type === 'set' && textOpDesc.text !== undefined) {
+          newTextValue = textOpDesc.text;
         }
-        
-        text.value.text = newText;
-        
-        return [text];
+        sharedText.value.text = newTextValue;
       }
-      
-      return undefined; // Let another rule handle it
-    }
+
+      return [sharedText];
+    },
+    "TextCRDT-Processing"
   ));
 }
 
-/**
- * Create a text CRDT operation for collaborative editing
- * 
- * @param type Operation type (insert or delete)
- * @param position Position in the text
- * @param value Value to insert (for insert operations)
- * @param length Length to delete (for delete operations)
- * @param clientId Client identifier for CRDT
- * @returns A text operation with CRDT properties
- */
+// ========== CRDT Helper ==========
+
 export function createTextCRDTOperation(
-  type: 'insert' | 'delete',
+  type: TextOperationDescriptor['type'],
   position: number,
-  value?: string,
+  text?: string,
   length?: number,
-  clientId: string = `client-${Math.random().toString(36).substring(2, 9)}`
-): TextOperation {
+  siteId: string = `site-${Math.random().toString(36).substring(2, 9)}`
+): { descriptor: TextOperationDescriptor, crdtOpId: string } {
+  const opId = `${siteId}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   return {
-    type,
-    position,
-    value,
-    length,
-    id: `${clientId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+    descriptor: { type, position, text, length },
+    crdtOpId: opId
   };
 }
+
+// Helper: Path to the generic Updater agent for its operation target
+const targetPath: string[] = [];

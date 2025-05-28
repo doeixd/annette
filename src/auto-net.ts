@@ -7,11 +7,10 @@
  * 3. SyncedNet for automatic server synchronization
  * 4. Serialization/deserialization for network state
  */
-import { Agent, IAgent, AgentId } from "./agent";
-import { IConnection } from "./connection";
+import { IAgent } from "./agent";
 import { ConnectionHistoryManager, VersionedChange } from "./connection-history";
 import { Network, INetwork } from "./network";
-import { Port, PortName } from "./port";
+import { Port } from "./port";
 import { Agent as NativeAgent } from "./agent";
 import { Updates, Updater } from "./updater";
 
@@ -140,7 +139,7 @@ export class AutoNet {
   private connectionGraph = new ConnectionGraph();
   private trackedValues = new Map<string, any>();
   private dependencyMap = new Map<string, Set<string>>();
-  private valueToAgentMap = new Map<any, IAgent>();
+  protected valueToAgentMap = new Map<any, IAgent>();
   
   /**
    * Create an automated network
@@ -203,7 +202,8 @@ export class AutoNet {
         // Reduce the network to apply the update
         this.network.reduce();
         
-        // The target will be updated by the reduction
+        // Update the target directly
+        target[prop] = value;
         return true;
       }
     });
@@ -306,14 +306,14 @@ export class AutoNet {
     // Add connection information
     for (const agent of agents) {
       if (agent.connections) {
-        for (const connection of Object.values(agent.connections)) {
+        for (const connection of Object.values(agent.connections) as any[]) {
           // Find source and target ports in the serialized nodes
-          const sourceNode = nodes.find(node => node.id === connection.source._agentId);
-          const targetNode = nodes.find(node => node.id === connection.destination._agentId);
+          const sourceNode = nodes.find(node => node.id === connection.source?._agentId);
+          const targetNode = nodes.find(node => node.id === connection.destination?._agentId);
           
           if (sourceNode && targetNode) {
-            const sourcePort = sourceNode.ports.find(port => port.name === connection.sourcePort.name);
-            const targetPort = targetNode.ports.find(port => port.name === connection.destinationPort.name);
+            const sourcePort = sourceNode.ports.find(port => port.name === connection.sourcePort?.name);
+            const targetPort = targetNode.ports.find(port => port.name === connection.destinationPort?.name);
             
             if (sourcePort && targetPort) {
               sourcePort.connection = targetPort.id;
@@ -429,8 +429,8 @@ export class SyncedNet extends AutoNet {
     
     // Enable connection history if the network supports it
     const network = this.getNetwork();
-    if (typeof network.enableConnectionHistory === 'function') {
-      this.connectionHistory = network.enableConnectionHistory().connectionHistory;
+    if (typeof (network as any).enableConnectionHistory === 'function') {
+      this.connectionHistory = (network as any).enableConnectionHistory().connectionHistory;
     }
     
     // Set up server sync
@@ -500,9 +500,10 @@ export class SyncedNet extends AutoNet {
       this.eventSource = new EventSource(`${this.syncUrl}/events?clientId=${this.clientId}`);
       
       // Handle incoming updates
-      this.eventSource.addEventListener('update', (event) => {
+      this.eventSource.addEventListener('message', (event) => {
         try {
-          const update = JSON.parse(event.data);
+          const messageEvent = event as MessageEvent;
+          const update = JSON.parse(messageEvent.data);
           this.applyServerUpdate(update);
         } catch (error) {
           console.error("Error parsing update:", error);
@@ -608,7 +609,7 @@ export class SyncedNet extends AutoNet {
       }
       return response.json();
     })
-    .then(data => {
+    .then((data: any) => {
       // Update last sync timestamp
       this.lastSyncTimestamp = data.timestamp || Date.now();
       
