@@ -1,6 +1,8 @@
 import { AgentName, IAgent, isAgent } from "./agent";
 import { IConnection, Connection, isConnection } from "./connection";
 import { IBoundPort, PortName, isBoundPort } from "./port";
+import { IPort } from './port';
+import { AgentStateSnapshot, IAgentDefinition, IConnectionDefinition } from './distributed/types';
 import { INetwork } from "./network";
 
 // Command types for rule operations
@@ -19,7 +21,7 @@ export type RuleCommand = RuleAddCommand | RuleRemoveCommand;
 
 // Common types for both rule types
 export type ActionReturn = void | (IAgent | IConnection | RuleCommand)[];
-export type RuleType = 'action' | 'rewrite';
+export type RuleType = 'action' | 'rewrite' | 'deterministic_action';
 
 // Action Rule System
 export type Action<
@@ -45,6 +47,26 @@ export interface IActionRule<
     portName2: PortName2;
   };
   action: Action<IAgent<AgentName1>, IAgent<AgentName2>>;
+}
+
+// Deterministic Action Rule System
+export interface IDeterministicActionRule {
+    type: 'deterministic_action';
+    name: string;
+    matchInfo: { 
+        agentName1: AgentName; 
+        portName1: PortName; 
+        agentName2: AgentName; 
+        portName2: PortName; 
+    };
+    action: (
+        agent1: IAgent, 
+        agent2: IAgent, 
+        network: INetwork, // Assuming INetwork is the base network type
+        ruleArgs?: any
+    ) => void | (IAgentDefinition | IConnectionDefinition)[]; // Returns DEFINITIONS
+    createsUndeterministicNewAgents?: boolean;
+    getEventArgs?: (agent1: IAgent, agent2: IAgent) => any;
 }
 
 // Rewrite Rule System
@@ -103,7 +125,7 @@ export interface IRewriteRule<
   rewrite: Rewrite;
 }
 
-export type AnyRule = IActionRule | IRewriteRule;
+export type AnyRule = IActionRule | IRewriteRule | IDeterministicActionRule;
 
 // Generic interface for backward compatibility
 export interface IRule<
@@ -123,7 +145,7 @@ export function isRule(rule: any): rule is IRule | AnyRule {
   if (typeof rule !== "object") {
     return false;
   } else if ("type" in rule) {
-    return (rule.type === 'action' || rule.type === 'rewrite') && 
+    return (rule.type === 'action' || rule.type === 'rewrite' || rule.type === 'deterministic_action') && 
            "name" in rule && "matchInfo" in rule;
   } else {
     return (
