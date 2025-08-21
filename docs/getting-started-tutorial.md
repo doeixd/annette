@@ -195,15 +195,18 @@ net.connectPorts(counter.ports.main, incrementer.ports.main);
 net.step();
 console.log('After +1:', counter.value.count); // 1
 
+// Disconnect then reconnect to trigger the rule again
+net.disconnectPorts(counter.ports.main, incrementer.ports.main);
 net.connectPorts(counter.ports.main, incrementer.ports.main);
 net.step();
 console.log('After +1:', counter.value.count); // 2
 
 // Decrement once
+// Disconnect from incrementer before connecting to decrementer
+net.disconnectPorts(counter.ports.main, incrementer.ports.main);
 net.connectPorts(counter.ports.main, decrementer.ports.main);
 net.step();
 console.log('After -1:', counter.value.count); // 1
-```
 
 **What you learned:**
 - You can create multiple rules for the same agent
