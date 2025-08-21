@@ -637,9 +637,11 @@ function createReactiveCache() {
   const get = (key: string) => {
     const value = cache().get(key);
     if (value !== undefined) {
-      // Update access count
-      const currentCount = accessCount().get(key) || 0;
-      accessCount().set(key, currentCount + 1);
+      // Update access count - create new Map to trigger reactivity
+      const updated = new Map(accessCount());
+      const currentCount = updated.get(key) || 0;
+      updated.set(key, currentCount + 1);
+      accessCount(updated);
     }
     return value;
   };
@@ -649,9 +651,11 @@ function createReactiveCache() {
     newCache.set(key, value);
     cache(newCache);
 
-    // Initialize access count
+    // Initialize access count - create new Map to trigger reactivity
     if (!accessCount().has(key)) {
-      accessCount().set(key, 0);
+      const updated = new Map(accessCount());
+      updated.set(key, 0);
+      accessCount(updated);
     }
   };
 
