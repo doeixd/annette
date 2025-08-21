@@ -865,7 +865,7 @@ This shows how reactive programming and agent-based networks can work together s
 Now that you understand reactive programming, explore:
 
 - [Time Travel Tutorial](time-travel-tutorial.md) - Add undo/redo to your reactive apps
-- [Distributed Systems Tutorial](distributed-tutorial.md) - Share reactive state across multiple clients
+- [Distributed Systems Tutorial](distributed-systems.md) - Share reactive state across multiple clients
 - [Advanced Examples](../examples/reactive-todo.ts) - See real-world reactive applications
 
 Reactive programming with Annette makes building dynamic, responsive applications much easier! 🚀
