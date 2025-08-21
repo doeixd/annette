@@ -76,8 +76,26 @@ jobs:
             echo "types_file=$TYPES_FILE"
           } >> $GITHUB_OUTPUT
 
-      - name: Publish to npm
-        run: npm publish
+      - name: Check package version and publish
+        run: |
+          # Extract package name and version from package.json
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Package: $PACKAGE_NAME"
+          echo "Version: $PACKAGE_VERSION"
+
+          # Check if version already exists in registry
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+            echo "Version $PACKAGE_VERSION already exists in registry. Skipping publish."
+            echo "version_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $PACKAGE_VERSION does not exist. Publishing..."
+            echo "version_exists=false" >> $GITHUB_OUTPUT
+
+            # Publish with provenance and public access
+            npm publish --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
