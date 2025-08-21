@@ -1,6 +1,6 @@
 import {
-  ReactiveProxy, ReactiveStore, createReactiveStore,
-  computed, Simple, Core
+  ReactiveProxy, createReactiveStore,
+  computed, Agent, Network, ActionRule
 } from "../src";
 
 /**
@@ -161,10 +161,10 @@ console.log("Tripled doubled:", tripledDoubledCount());
 console.log("\n--- Integration with Annette Network ---");
 
 // Create a network
-const reactiveNetwork = Core.createNetwork("reactive-network");
+const reactiveNetwork = Network("reactive-network");
 
 // Create a reactive data agent
-const dataAgent = Core.createAgent("ReactiveData", {
+const dataAgent = Agent("ReactiveData", {
   items: [
     { id: 1, name: "Item 1", value: 100 },
     { id: 2, name: "Item 2", value: 200 },
@@ -177,14 +177,14 @@ const dataAgent = Core.createAgent("ReactiveData", {
 });
 
 // Create a reactive store agent
-const storeAgent = Core.createAgent("ReactiveStore", {
+const storeAgent = Agent("ReactiveStore", {
   store: store,
   computedValues: {},
   effects: []
 });
 
 // Create a computed agent
-const computedAgent = Core.createAgent("ComputedValue", {
+const computedAgent = Agent("ComputedValue", {
   name: "totalValue",
   value: 0,
   dependencies: ["items"]
@@ -196,24 +196,23 @@ reactiveNetwork.addAgent(storeAgent);
 reactiveNetwork.addAgent(computedAgent);
 
 // Create a rule for updating the computed value
-const computeRule = Core.createRule(
-  "update-computed",
+const computeRule = ActionRule(
   dataAgent.ports.main,
   computedAgent.ports.main,
-  (data, computed, network) => {
+  (data, computed) => {
     console.log("Computing total value...");
-    
+
     // Calculate the total value
     const totalValue = data.value.items.reduce(
-      (sum, item) => sum + item.value, 
+      (sum, item) => sum + item.value,
       0
     );
-    
+
     // Update the computed value
     computed.value.value = totalValue;
-    
+
     console.log(`Total value computed: ${totalValue}`);
-    
+
     return [data, computed];
   }
 );

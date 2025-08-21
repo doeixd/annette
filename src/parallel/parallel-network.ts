@@ -9,6 +9,7 @@ import { IAgent } from '../agent';
 import { IConnection } from '../connection';
 import { INetwork, Network } from '../network';
 import { AnyRule } from '../rule';
+import { IBoundPort } from '../port';
 import { 
   ExecutionResult, 
   RuleSet, 
@@ -77,8 +78,18 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
     
     // First pass: build dependency map
     for (const rule of rules) {
-      const agent1Id = rule.agent1Id || (rule as any).connection?.source?._agentId;
-      const agent2Id = rule.agent2Id || (rule as any).connection?.destination?._agentId;
+      let agent1Id: string | undefined;
+      let agent2Id: string | undefined;
+
+      if ('matchInfo' in rule) {
+        // New rule format
+        agent1Id = rule.matchInfo.agentName1;
+        agent2Id = rule.matchInfo.agentName2;
+      } else if ('connection' in rule) {
+        // Legacy rule format
+        agent1Id = rule.connection.source._agentId;
+        agent2Id = rule.connection.destination._agentId;
+      }
       
       if (!agent1Id || !agent2Id) continue;
       
@@ -120,8 +131,18 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
       for (const rule of rules) {
         if (processedRules.has(rule)) continue;
         
-        const agent1Id = rule.agent1Id || (rule as any).connection?.source?._agentId;
-        const agent2Id = rule.agent2Id || (rule as any).connection?.destination?._agentId;
+        let agent1Id: string | undefined;
+        let agent2Id: string | undefined;
+
+        if ('matchInfo' in rule) {
+          // New rule format
+          agent1Id = rule.matchInfo.agentName1;
+          agent2Id = rule.matchInfo.agentName2;
+        } else if ('connection' in rule) {
+          // Legacy rule format
+          agent1Id = rule.connection.source._agentId;
+          agent2Id = rule.connection.destination._agentId;
+        }
         
         if (!agent1Id || !agent2Id) continue;
         
@@ -172,10 +193,10 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
         ruleId: uuidv4(),
         ruleName: rule.name,
         ruleType: rule.type,
-        agentId1: rule.matchInfo.agent1Id || rule.agent1Id,
-        agentId2: rule.matchInfo.agent2Id || rule.agent2Id,
-        port1Id: rule.matchInfo.port1Id || rule.port1Id,
-        port2Id: rule.matchInfo.port2Id || rule.port2Id,
+        agentId1: rule.matchInfo.agentName1,
+        agentId2: rule.matchInfo.agentName2,
+        port1Id: rule.matchInfo.portName1,
+        port2Id: rule.matchInfo.portName2,
         ruleDefinition: rule.type === 'action' ? rule.action : rule.rewrite
       };
     } else {
@@ -198,11 +219,11 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
  * Parallel Network implementation that distributes rule execution
  * across multiple web workers for improved performance
  */
-export class ParallelNetwork implements INetwork {
+export class ParallelNetwork<Name extends string = string, A extends IAgent = IAgent> implements INetwork<Name, A> {
   /**
    * The base network that handles the actual data
    */
-  private baseNetwork: INetwork;
+  private baseNetwork: INetwork<Name, A>;
   
   /**
    * Worker pool for parallel execution
@@ -252,12 +273,12 @@ export class ParallelNetwork implements INetwork {
       ...options
     };
     
-    this.baseNetwork = this.options.baseNetwork!;
+    this.baseNetwork = this.options.baseNetwork! as unknown as INetwork<Name, A>;
     this.workerPool = new WorkerPool(options);
     this.dependencyAnalyzer = new DefaultRuleDependencyAnalyzer();
     
     // Check if parallel execution is available
-    if (typeof Worker === 'undefined') {
+    if (typeof globalThis !== 'undefined' && typeof (globalThis as any).Worker === 'undefined') {
       this.parallelEnabled = false;
       console.warn('Web Workers not available. Falling back to sequential execution.');
     }
@@ -275,8 +296,8 @@ export class ParallelNetwork implements INetwork {
   /**
    * Get the network name
    */
-  get name(): string {
-    return this.baseNetwork.name;
+  get name(): Name {
+    return this.baseNetwork.name as Name;
   }
   
   /**
@@ -284,7 +305,7 @@ export class ParallelNetwork implements INetwork {
    * @param agent The agent to add
    * @returns The added agent
    */
-  addAgent(agent: IAgent): IAgent {
+  addAgent<T extends A | IAgent>(agent: T): T {
     return this.baseNetwork.addAgent(agent);
   }
   
@@ -293,8 +314,8 @@ export class ParallelNetwork implements INetwork {
    * @param agentOrId The agent or agent ID to remove
    * @returns True if the agent was removed
    */
-  removeAgent(agentOrId: IAgent | string): boolean {
-    return this.baseNetwork.removeAgent(agentOrId);
+  removeAgent(agentOrId: A | string): boolean {
+    return this.baseNetwork.removeAgent(agentOrId as any);
   }
   
   /**
@@ -302,54 +323,86 @@ export class ParallelNetwork implements INetwork {
    * @param id The agent ID
    * @returns The agent or undefined
    */
-  getAgent(id: string): IAgent | undefined {
-    return this.baseNetwork.getAgent(id);
+  getAgent<T extends A | IAgent>(agentId: string): T | undefined {
+    return this.baseNetwork.getAgent(agentId);
   }
   
   /**
-   * Connect two agents
-   * @param agent1 The first agent
-   * @param port1 The port name on the first agent
-   * @param agent2 The second agent
-   * @param port2 The port name on the second agent
+   * Connect two ports
+   * @param port1 The first port
+   * @param port2 The second port
+   * @param connectionName Optional connection name
    * @returns The created connection
    */
-  connect(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection {
-    return this.baseNetwork.connect(agent1, port1, agent2, port2);
+  connectPorts<P1 extends IBoundPort = IBoundPort, P2 extends IBoundPort = IBoundPort>(
+    port1: P1,
+    port2: P2,
+    connectionName?: string
+  ): IConnection<string, P1["agent"], P2["agent"], any, any> | undefined {
+    return this.baseNetwork.connectPorts(port1, port2, connectionName);
   }
-  
+
   /**
-   * Disconnect two agents
-   * @param connection The connection to remove
+   * Disconnect two ports
+   * @param port1 The first port
+   * @param port2 The second port
    * @returns True if the connection was removed
    */
-  disconnect(connection: IConnection): boolean {
-    return this.baseNetwork.disconnect(connection);
+  disconnectPorts<P1 extends IBoundPort = IBoundPort, P2 extends IBoundPort = IBoundPort>(
+    port1: P1,
+    port2: P2
+  ): boolean {
+    return this.baseNetwork.disconnectPorts(port1, port2);
+  }
+
+  /**
+   * Check if a port is connected
+   * @param port The port to check
+   * @returns True if the port is connected
+   */
+  isPortConnected<P extends IBoundPort = IBoundPort>(port: P): boolean {
+    return this.baseNetwork.isPortConnected(port);
+  }
+
+  /**
+   * Get all connections in the network
+   * @returns Array of all connections
+   */
+  getAllConnections(): IConnection[] {
+    return this.baseNetwork.getAllConnections();
+  }
+
+  /**
+   * Find connections matching criteria
+   * @param query Optional query parameters
+   * @returns Array of matching connections
+   */
+  findConnections(query?: { from?: IBoundPort, to?: IBoundPort }): IConnection[] {
+    return this.baseNetwork.findConnections(query);
   }
   
   /**
    * Add a rule to the network
    * @param rule The rule to add
-   * @returns The added rule
    */
-  addRule(rule: AnyRule): AnyRule {
-    return this.baseNetwork.addRule(rule);
+  addRule(rule: AnyRule): void {
+    this.baseNetwork.addRule(rule);
   }
   
   /**
    * Remove a rule from the network
-   * @param rule The rule to remove
+   * @param rule The rule or rule name to remove
    * @returns True if the rule was removed
    */
-  removeRule(rule: AnyRule): boolean {
+  removeRule(rule: string | AnyRule): boolean {
     return this.baseNetwork.removeRule(rule);
   }
   
   /**
    * Execute all applicable rules in the network
-   * @returns The number of rules executed
+   * @returns True if any rules were executed
    */
-  async step(): Promise<number> {
+  step(): boolean {
     // If parallel execution is disabled or currently processing, fall back to sequential
     if (!this.parallelEnabled || this.processingBatch) {
       return this.baseNetwork.step();
@@ -359,7 +412,7 @@ export class ParallelNetwork implements INetwork {
     const rules = this.baseNetwork.getApplicableRules();
     
     if (rules.length === 0) {
-      return 0;
+      return false;
     }
     
     // Add to the pending batch
@@ -367,18 +420,19 @@ export class ParallelNetwork implements INetwork {
     
     // If we have enough rules, process the batch immediately
     if (this.pendingRuleBatch.length >= this.options.minBatchSize!) {
-      return this.processBatch();
+      this.processBatch();
+      return true;
     }
-    
+
     // Otherwise, set a timer to process the batch
     if (!this.batchTimer) {
       this.batchTimer = setTimeout(() => {
         this.processBatch();
       }, this.options.maxBatchWaitTime);
     }
-    
-    // Return 0 since we haven't actually processed anything yet
-    return 0;
+
+    // Return false since we haven't actually processed anything yet
+    return false;
   }
   
   /**
@@ -509,10 +563,10 @@ export class ParallelNetwork implements INetwork {
         ruleId: uuidv4(),
         ruleName: rule.name,
         ruleType: rule.type,
-        agentId1: rule.matchInfo.agent1Id || rule.agent1Id,
-        agentId2: rule.matchInfo.agent2Id || rule.agent2Id,
-        port1Id: rule.matchInfo.port1Id || rule.port1Id,
-        port2Id: rule.matchInfo.port2Id || rule.port2Id,
+        agentId1: rule.matchInfo.agentName1,
+        agentId2: rule.matchInfo.agentName2,
+        port1Id: rule.matchInfo.portName1,
+        port2Id: rule.matchInfo.portName2,
       };
     } else {
       // Legacy rule format
@@ -541,7 +595,7 @@ export class ParallelNetwork implements INetwork {
     }> = [];
     
     // Serialize agents
-    for (const agent of this.baseNetwork.getAgents()) {
+    for (const agent of this.baseNetwork.getAllAgents()) {
       agents[agent._agentId] = {
         id: agent._agentId,
         name: agent.name,
@@ -557,7 +611,7 @@ export class ParallelNetwork implements INetwork {
     }
     
     // Serialize connections
-    for (const connection of this.baseNetwork.getConnections()) {
+    for (const connection of this.baseNetwork.getAllConnections()) {
       connections.push({
         sourceAgentId: connection.source._agentId,
         sourcePortName: connection.sourcePort.name,
@@ -631,44 +685,45 @@ export class ParallelNetwork implements INetwork {
   findAgents(criteria: any): IAgent[] {
     return this.baseNetwork.findAgents(criteria);
   }
-  
+
   /**
-   * Find connections matching the given criteria
-   * @param criteria The search criteria
-   * @returns Array of matching connections
+   * Get all agents in the network
+   * @returns Array of all agents
    */
-  findConnections(criteria: any): IConnection[] {
-    return this.baseNetwork.findConnections(criteria);
+  getAllAgents(): IAgent[] {
+    return this.baseNetwork.getAllAgents();
   }
-  
+
   /**
-   * Enable or disable parallel execution
-   * @param enabled Whether parallel execution is enabled
+   * Get all rules in the network
+   * @returns Array of all rules
    */
-  setParallelExecution(enabled: boolean): void {
-    this.parallelEnabled = enabled && typeof Worker !== 'undefined';
+  getAllRules(): AnyRule[] {
+    return this.baseNetwork.getAllRules();
   }
-  
+
   /**
-   * Check if parallel execution is enabled
-   * @returns True if parallel execution is enabled
+   * Find rules matching criteria
+   * @param query Optional query parameters
+   * @returns Array of matching rules
    */
-  isParallelExecutionEnabled(): boolean {
-    return this.parallelEnabled;
+  findRules(query?: { name?: string; type?: string; agentName?: string; portName?: string }): AnyRule[] {
+    return this.baseNetwork.findRules(query);
   }
-  
+
   /**
-   * Get the worker pool status
-   * @returns Worker pool status
+   * Clear all rules from the network
    */
-  getWorkerPoolStatus(): { totalWorkers: number; activeWorkers: number; queuedTasks: number } {
-    return this.workerPool.getStatus();
+  clearRules(): void {
+    return this.baseNetwork.clearRules();
   }
-  
+
   /**
-   * Terminate the worker pool
+   * Execute rules until no more can be executed
+   * @param maxSteps Maximum number of steps to execute
+   * @returns Number of steps executed
    */
-  terminate(): void {
-    this.workerPool.terminate();
+  reduce(maxSteps?: number): number {
+    return this.baseNetwork.reduce(maxSteps);
   }
 }

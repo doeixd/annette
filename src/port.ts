@@ -1,7 +1,7 @@
 import { AgentId, IAgent } from "./agent";
 
 
-import { v4 as uuidv4 } from 'uuid';
+
 import { IConnection } from "./connection";
 import { Action } from "./rule";
 
