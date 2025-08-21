@@ -7,7 +7,7 @@ import { Action } from "./rule";
 
 export type PortTypes = "main" | "aux" | "wait" | "hold" | "sync" | "remote";
 
-interface IRule<
+export interface IRule<
   Name extends string = string,
   S extends IAgent = IAgent,
   D extends IAgent = IAgent,
