@@ -404,6 +404,6 @@ const logRule = ActionRule(user.ports.main, logger.ports.main, /* ... */);
 - [Advanced Examples](../examples/)
 - [API Reference](../README.md#api-reference)
 - [Time Travel Tutorial](time-travel-tutorial.md)
-- [Distributed Systems Tutorial](distributed-tutorial.md)
+- [Distributed Systems Tutorial](distributed-systems.md)
 
 Happy coding with Annette! 🚀
