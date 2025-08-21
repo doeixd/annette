@@ -1,8 +1,7 @@
 import { AgentName, IAgent, isAgent } from "./agent";
 import { IConnection, Connection, isConnection } from "./connection";
 import { IBoundPort, PortName, isBoundPort } from "./port";
-import { IPort } from './port';
-import { AgentStateSnapshot, IAgentDefinition, IConnectionDefinition } from './distributed/types';
+import { IAgentDefinition, IConnectionDefinition } from './distributed/types';
 import { INetwork } from "./network";
 
 // Command types for rule operations

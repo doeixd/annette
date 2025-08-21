@@ -8,7 +8,7 @@
 import { IAgent } from '../agent';
 import { IConnection } from '../connection';
 import { INetwork, Network } from '../network';
-import { AnyRule, IRule } from '../rule';
+import { AnyRule } from '../rule';
 import { 
   ExecutionResult, 
   RuleSet, 
@@ -176,7 +176,6 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
         agentId2: rule.matchInfo.agent2Id || rule.agent2Id,
         port1Id: rule.matchInfo.port1Id || rule.port1Id,
         port2Id: rule.matchInfo.port2Id || rule.port2Id,
-        ruleName: rule.name,
         ruleDefinition: rule.type === 'action' ? rule.action : rule.rewrite
       };
     } else {
@@ -189,7 +188,6 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
         agentId2: (rule as any).connection?.destination?._agentId,
         port1Id: (rule as any).connection?.sourcePort?.id,
         port2Id: (rule as any).connection?.destinationPort?.id,
-        ruleName: rule.name,
         ruleDefinition: (rule as any).action
       };
     }
@@ -515,8 +513,6 @@ export class ParallelNetwork implements INetwork {
         agentId2: rule.matchInfo.agent2Id || rule.agent2Id,
         port1Id: rule.matchInfo.port1Id || rule.port1Id,
         port2Id: rule.matchInfo.port2Id || rule.port2Id,
-        ruleName: rule.name,
-        ruleDefinition: rule.type === 'action' ? rule.action : rule.rewrite
       };
     } else {
       // Legacy rule format
@@ -528,12 +524,10 @@ export class ParallelNetwork implements INetwork {
         agentId2: (rule as any).connection?.destination?._agentId,
         port1Id: (rule as any).connection?.sourcePort?.id,
         port2Id: (rule as any).connection?.destinationPort?.id,
-        ruleName: rule.name,
-        ruleDefinition: (rule as any).action
-      };
+       };
     }
   }
-  
+
   /**
    * Serialize the network state for worker execution
    */

@@ -18,7 +18,7 @@ import {
 import {
   Updater as UpdaterClass, // Alias if Updater is also a type
   UpdaterValue, UpdateOperation,
-  Updates, applyUpdate, registerUpdaterRules
+  applyUpdate, registerUpdaterRules
 } from './updater';
 
 import {
