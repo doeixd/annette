@@ -1,4 +1,4 @@
-import Agent, { IAgent } from '../agent';
+import { Agent, IAgent } from '../agent';
 import { Connection } from '../connection';
 import { PortsDefObj, PortTypes } from '../port';
 // Assuming Action, RewritePattern, IRule, ActionRule, RewriteRule are correctly defined in '../rule'
