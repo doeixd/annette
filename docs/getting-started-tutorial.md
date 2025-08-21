@@ -304,7 +304,7 @@ console.log(missingAgent); // undefined
 const removed = net.removeAgent('non-existent-id');
 console.log(removed); // false
 
-// Try to connect to non-existent ports (this won't throw but won't create a connection)
+// Stepping an empty network does not throw and returns 0
 try {
   // This is safe - no error thrown
   const result = net.step();
