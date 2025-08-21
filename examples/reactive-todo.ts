@@ -256,7 +256,7 @@ function simulateUserInteractions() {
   addTodoAgent.value.priority = 'high';
   todoNetwork.connectPorts(addTodoAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
-
+  todoNetwork.disconnectPorts(addTodoAgent.ports.main, displayAgent.ports.main);
   // Toggle a todo
   console.log("🔄 Toggling first todo...");
   toggleTodoAgent.value.id = 1;
