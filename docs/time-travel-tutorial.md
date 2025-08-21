@@ -649,7 +649,7 @@ function reproduceBug(bugReport: BugReport) {
 
 Now that you understand time travel, explore:
 
-- [Distributed Systems Tutorial](distributed-tutorial.md) - Share state across multiple clients
+- [Distributed Systems Tutorial](distributed-systems.md) - Share state across multiple clients
 - [Reactive Programming Tutorial](reactive-tutorial.md) - Build reactive user interfaces
 - [Advanced Patterns](../examples/) - See real-world examples
 
