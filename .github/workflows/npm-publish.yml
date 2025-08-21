@@ -120,6 +120,7 @@ jobs:
           body: ${{ steps.get_changelog.outputs.changelog }}
           draft: false
           prerelease: false
+          fail_on_unmatched_files: false
           files: |
             ${{ steps.find_files.outputs.cjs_file }}
             ${{ steps.find_files.outputs.esm_file }}
