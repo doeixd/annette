@@ -31,17 +31,50 @@ jobs:
       - name: Find built files
         id: find_files
         run: |
-          CJS_FILE=$(find dist -name "*.cjs.js" -or -name "index.js" -or -name "index.jsx" | grep "/cjs/" | head -n 1)
-          ESM_FILE=$(find dist -name "*.esm.js" -or -name "index.js" -or -name "index.jsx" | grep "/esm/" | head -n 1)
-          TYPES_FILE=$(find dist -name "index.d.ts" | head -n 1)
+          # Find CJS file with robust pattern matching
+          CJS_FILE=""
+          if [ -d "dist" ]; then
+            # Try to find CJS files with various patterns
+            CJS_FILE=$(find dist \( -name "*.cjs.js" -o -name "index.cjs.js" -o -path "*/cjs/*" -name "index.js" \) 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$CJS_FILE" ]; then
+              CJS_FILE=$(find dist -name "index.js" -exec grep -l "CommonJS\|require(" {} \; 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
 
-          echo "CJS file: $CJS_FILE"
-          echo "ESM file: $ESM_FILE"
-          echo "Types file: $TYPES_FILE"
+          # Find ESM file with robust pattern matching
+          ESM_FILE=""
+          if [ -d "dist" ]; then
+            # Try to find ESM files with various patterns
+            ESM_FILE=$(find dist \( -name "*.esm.js" -o -name "index.esm.js" -o -path "*/esm/*" -name "index.js" \) 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$ESM_FILE" ]; then
+              ESM_FILE=$(find dist -name "index.js" -exec grep -l "export\|import.*from" {} \; 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
 
-          echo "cjs_file=$CJS_FILE" >> $GITHUB_OUTPUT
-          echo "esm_file=$ESM_FILE" >> $GITHUB_OUTPUT
-          echo "types_file=$TYPES_FILE" >> $GITHUB_OUTPUT
+          # Find TypeScript declaration file
+          TYPES_FILE=""
+          if [ -d "dist" ]; then
+            TYPES_FILE=$(find dist -name "index.d.ts" 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$TYPES_FILE" ]; then
+              TYPES_FILE=$(find dist -name "*.d.ts" 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
+
+          # Ensure we have deterministic output (empty string if not found)
+          CJS_FILE="${CJS_FILE:-}"
+          ESM_FILE="${ESM_FILE:-}"
+          TYPES_FILE="${TYPES_FILE:-}"
+
+          echo "CJS file: '$CJS_FILE'"
+          echo "ESM file: '$ESM_FILE'"
+          echo "Types file: '$TYPES_FILE'"
+
+          # Always write to GITHUB_OUTPUT, even if empty
+          {
+            echo "cjs_file=$CJS_FILE"
+            echo "esm_file=$ESM_FILE"
+            echo "types_file=$TYPES_FILE"
+          } >> $GITHUB_OUTPUT
 
       - name: Publish to npm
         run: npm publish
