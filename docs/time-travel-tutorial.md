@@ -182,23 +182,24 @@ class UndoRedoManager {
   private snapshots: Array<{ id: string; description: string }> = [];
   private currentIndex = -1;
 
+  // Store agent references for direct access
+  private counterAgent = Agent('Counter', { count: 0 });
+  private incrementerAgent = Agent('Incrementer', { amount: 1 });
+  private decrementerAgent = Agent('Decrementer', { amount: -1 });
+
   constructor() {
     this.net = TimeTravelNetwork('undo-redo-app');
     this.setupApp();
   }
 
   private setupApp() {
-    const counter = Agent('Counter', { count: 0 });
-    const incrementer = Agent('Incrementer', { amount: 1 });
-    const decrementer = Agent('Decrementer', { amount: -1 });
-
-    this.net.addAgent(counter);
-    this.net.addAgent(incrementer);
-    this.net.addAgent(decrementer);
+    this.net.addAgent(this.counterAgent);
+    this.net.addAgent(this.incrementerAgent);
+    this.net.addAgent(this.decrementerAgent);
 
     const incrementRule = ActionRule(
-      counter.ports.main,
-      incrementer.ports.main,
+      this.counterAgent.ports.main,
+      this.incrementerAgent.ports.main,
       (counter, incrementer) => {
         counter.value.count += incrementer.value.amount;
         return [counter, incrementer];
@@ -206,8 +207,8 @@ class UndoRedoManager {
     );
 
     const decrementRule = ActionRule(
-      counter.ports.main,
-      decrementer.ports.main,
+      this.counterAgent.ports.main,
+      this.decrementerAgent.ports.main,
       (counter, decrementer) => {
         counter.value.count += decrementer.value.amount;
         return [counter, decrementer];
@@ -229,25 +230,17 @@ class UndoRedoManager {
   }
 
   increment() {
-    const counter = this.net.getAgent('Counter');
-    const incrementer = this.net.getAgent('Incrementer');
-
-    if (counter && incrementer) {
-      this.net.connectPorts(counter.ports.main, incrementer.ports.main);
-      this.net.step();
-      this.takeSnapshot(`Increment to ${counter.value.count}`);
-    }
+    // Use stored agent references directly
+    this.net.connectPorts(this.counterAgent.ports.main, this.incrementerAgent.ports.main);
+    this.net.step();
+    this.takeSnapshot(`Increment to ${this.counterAgent.value.count}`);
   }
 
   decrement() {
-    const counter = this.net.getAgent('Counter');
-    const decrementer = this.net.getAgent('Decrementer');
-
-    if (counter && decrementer) {
-      this.net.connectPorts(counter.ports.main, decrementer.ports.main);
-      this.net.step();
-      this.takeSnapshot(`Decrement to ${counter.value.count}`);
-    }
+    // Use stored agent references directly
+    this.net.connectPorts(this.counterAgent.ports.main, this.decrementerAgent.ports.main);
+    this.net.step();
+    this.takeSnapshot(`Decrement to ${this.counterAgent.value.count}`);
   }
 
   undo() {
