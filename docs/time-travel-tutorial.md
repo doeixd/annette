@@ -151,14 +151,12 @@ net.step();
 const snapshot2 = net.takeSnapshot('After +1');
 console.log('Count:', counter.value.count); // 1
 
-net.step();
 // Reconnect to trigger the rule again
 net.disconnectPorts(counter.ports.main, incrementer.ports.main);
 net.connectPorts(counter.ports.main, incrementer.ports.main);
 net.step();
 const snapshot3 = net.takeSnapshot('After +2');
 console.log('Count:', counter.value.count); // 2
-
 // Get all snapshots
 const allSnapshots = net.getSnapshots();
 console.log('Total snapshots:', allSnapshots.length); // 3
