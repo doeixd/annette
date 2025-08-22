@@ -104,7 +104,21 @@ jobs:
         id: get_changelog
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
+          PLAIN_VERSION=${VERSION#v}
+          # Try [vX.Y.Z]
           CHANGELOG_ENTRY=$(awk "/^## \[$VERSION\]/ {flag=1;next} /^## \[/ {flag=0} flag" CHANGELOG.md)
+          # Fallback: [X.Y.Z]
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY=$(awk "/^## \[$PLAIN_VERSION\]/ {flag=1;next} /^## \[/ {flag=0} flag" CHANGELOG.md)
+          fi
+          # Fallback: '## X.Y.Z' (no brackets)
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY=$(awk "/^## ${PLAIN_VERSION}\$/ {flag=1;next} /^## / {flag=0} flag" CHANGELOG.md)
+          fi
+          # Last resort
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY="Automated release for ${VERSION}. See commit history."
+          fi
           CHANGELOG_ENTRY="${CHANGELOG_ENTRY//'%'/'%25'}"
           CHANGELOG_ENTRY="${CHANGELOG_ENTRY//$'\n'/'%0A'}"
           CHANGELOG_ENTRY="${CHANGELOG_ENTRY//$'\r'/'%0D'}"
