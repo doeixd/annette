@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { IAgent, AgentName, Agent, IPort } from '../agent'; // Assuming Agent factory is also needed for createAgent
+import { IAgent, AgentName, Agent } from '../agent'; // Assuming Agent factory is also needed for createAgent
 import { INetwork } from '../network';
 import { IBoundPort, PortName } from '../port'; // IPort might be in agent.ts or port.ts
 import { AnyRule } from '../rule';

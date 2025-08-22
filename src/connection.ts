@@ -1,12 +1,8 @@
 import { isAgent, IAgent } from "./agent";
 import {
   IBoundPort,
-  IPort,
   isBoundPort,
   PortInstanceKey,
-  PortsDefObj,
-  PortsMap,
-  PortTypes,
   getPortInstanceKey
 } from "./port";
 
