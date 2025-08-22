@@ -268,8 +268,7 @@ class UndoRedoManager {
   }
 
   getCurrentValue() {
-    const counter = this.net.getAgent('Counter');
-    return counter?.value.count || 0;
+    return this.counterAgent.value.count;
   }
 
   getHistory() {
