@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Connections } from "./connection";
-import { IBoundPort, BoundPortsMap, isHasMainPort, isPort, IPort, IPorts, Port, PortsHasMainPort, UnboundPortArray, UnboundPortDefObj, isUnboundPortArray, isUnboundPortDefObj, UnboundPort, BoundPort, PortsDefObj, PortArray, PortsMap, isPortArray, UnboundPortsMap, addMainPortIfNotExists, isPortsDefObj, isPortsMap, createBoundPortsMap } from "./port";
+import { BoundPortsMap, Port, PortsHasMainPort, PortsDefObj, PortArray, PortsMap, createBoundPortsMap } from "./port";
 
 export type AgentId = string;
 export type AgentName = string;

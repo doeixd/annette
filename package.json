@@ -16,6 +16,7 @@
     "@types/node": "^22.10.2",
     "@types/uuid": "^9.0.8",
     "pridepack": "2.6.3",
+    "standard-version": "^9.5.0",
     "tslib": "^2.8.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
@@ -33,7 +34,12 @@
     "watch": "pridepack watch",
     "start": "pridepack start",
     "dev": "pridepack dev",
-    "test": "vitest"
+    "test": "vitest",
+    "release": "standard-version && git push --follow-tags origin main",
+    "release:minor": "standard-version --release-as minor",
+    "release:patch": "standard-version --release-as patch",
+    "release:major": "standard-version --release-as major",
+    "release:prerelease": "standard-version --prerelease"
   },
   "private": false,
   "description": "An interaction net based js framework",
