@@ -262,12 +262,14 @@ function simulateUserInteractions() {
   toggleTodoAgent.value.id = 1;
   todoNetwork.connectPorts(toggleTodoAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(toggleTodoAgent.ports.main, displayAgent.ports.main);
 
   // Change filter to active
   console.log("🔍 Changing filter to 'active'...");
   changeFilterAgent.value.filter = 'active';
   todoNetwork.connectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
 
   // Add another todo
   console.log("➕ Adding another todo...");
@@ -275,30 +277,34 @@ function simulateUserInteractions() {
   addTodoAgent.value.priority = 'medium';
   todoNetwork.connectPorts(addTodoAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(addTodoAgent.ports.main, displayAgent.ports.main);
 
   // Change filter to completed
   console.log("🔍 Changing filter to 'completed'...");
   changeFilterAgent.value.filter = 'completed';
   todoNetwork.connectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
 
   // Clear completed todos
   console.log("🗑️ Clearing completed todos...");
   todoNetwork.connectPorts(clearCompletedAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(clearCompletedAgent.ports.main, displayAgent.ports.main);
 
   // Change filter back to all
   console.log("🔍 Changing filter back to 'all'...");
   changeFilterAgent.value.filter = 'all';
   todoNetwork.connectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
+  todoNetwork.disconnectPorts(changeFilterAgent.ports.main, displayAgent.ports.main);
 
   // Delete a todo
   console.log("🗑️ Deleting a todo...");
   deleteTodoAgent.value.id = 3;
   todoNetwork.connectPorts(deleteTodoAgent.ports.main, displayAgent.ports.main);
   todoNetwork.step();
-
+  todoNetwork.disconnectPorts(deleteTodoAgent.ports.main, displayAgent.ports.main);
   console.log("🎉 Simulation complete!");
 }
 
