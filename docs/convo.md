@@ -2606,6 +2606,8 @@ The Interaction Calculus is powerful enough to serve as a **universal assembly l
 ---
 ---
 
+# Claude Artifact, POC example. 
+
 import React, { useState, useEffect, useRef } from 'react';
 
 // ==========================================
@@ -2676,7 +2678,324 @@ class Heap {
 }
 
 // ==========================================
-// PHASE 2: THE WASM RUNTIME
+// PHASE 3: THE WEBGPU PARALLEL ENGINE
+// ==========================================
+
+// WGSL Compute Shaders
+const findRedexesShader = `
+// Constants matching our heap layout
+const NODE_SIZE: u32 = 3u;
+const TAG_APP: u32 = 5u;
+const TAG_LAM: u32 = 4u;
+const TAG_OP: u32 = 8u;
+const TAG_NUM: u32 = 2u;
+
+// Buffers
+@group(0) @binding(0) var<storage, read> heap: array<u32>;
+@group(0) @binding(1) var<storage, read_write> redexCounter: atomic<u32>;
+@group(0) @binding(2) var<storage, read_write> redexBuffer: array<vec2<u32>>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let nodeIdx = global_id.x;
+    let ptr = nodeIdx * NODE_SIZE;
+    
+    // Bounds check
+    if (ptr >= arrayLength(&heap) - NODE_SIZE) {
+        return;
+    }
+    
+    let header = heap[ptr];
+    let tag = header & 0xFFu;
+    
+    // Look for APP nodes
+    if (tag == TAG_APP) {
+        let funPtr = heap[ptr + 1u];
+        if (funPtr == 0u) {
+            return;
+        }
+        
+        let funHeader = heap[funPtr];
+        let funTag = funHeader & 0xFFu;
+        
+        // Check for APP-LAM interaction
+        if (funTag == TAG_LAM) {
+            let argPtr = heap[ptr + 2u];
+            let bodyPtr = heap[funPtr + 2u];
+            
+            if (bodyPtr != 0u && argPtr != 0u) {
+                // Found a redex! Store it
+                let idx = atomicAdd(&redexCounter, 1u);
+                redexBuffer[idx] = vec2<u32>(ptr, funPtr);
+            }
+        }
+        
+        // Check for APP-OP interaction
+        if (funTag == TAG_OP) {
+            let arg1Ptr = heap[funPtr + 1u];
+            let arg2Ptr = heap[funPtr + 2u];
+            
+            if (arg1Ptr != 0u && arg2Ptr != 0u) {
+                let arg1Tag = heap[arg1Ptr] & 0xFFu;
+                let arg2Tag = heap[arg2Ptr] & 0xFFu;
+                
+                if (arg1Tag == TAG_NUM && arg2Tag == TAG_NUM) {
+                    let idx = atomicAdd(&redexCounter, 1u);
+                    redexBuffer[idx] = vec2<u32>(ptr, funPtr);
+                }
+            }
+        }
+    }
+}
+`;
+
+const reduceRedexesShader = `
+const NODE_SIZE: u32 = 3u;
+const TAG_FREE: u32 = 0u;
+const TAG_NUM: u32 = 2u;
+const TAG_LAM: u32 = 4u;
+const TAG_APP: u32 = 5u;
+const TAG_OP: u32 = 8u;
+
+const OP_ADD: u32 = 1u;
+const OP_SUB: u32 = 2u;
+const OP_MUL: u32 = 3u;
+
+@group(0) @binding(0) var<storage, read> redexBuffer: array<vec2<u32>>;
+@group(0) @binding(1) var<storage, read> redexCounter: atomic<u32>;
+@group(0) @binding(2) var<storage, read_write> heap: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> freeList: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> freeListLen: atomic<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let redexIdx = global_id.x;
+    
+    // Bounds check
+    if (redexIdx >= atomicLoad(&redexCounter)) {
+        return;
+    }
+    
+    let pair = redexBuffer[redexIdx];
+    let ptr1 = pair.x;  // APP node
+    let ptr2 = pair.y;  // LAM or OP node
+    
+    let header1 = atomicLoad(&heap[ptr1]);
+    let tag1 = header1 & 0xFFu;
+    let header2 = atomicLoad(&heap[ptr2]);
+    let tag2 = header2 & 0xFFu;
+    
+    // APP-OP reduction
+    if (tag1 == TAG_APP && tag2 == TAG_OP) {
+        let opType = (header2 >> 8u) & 0xFFu;
+        let arg1Ptr = atomicLoad(&heap[ptr2 + 1u]);
+        let arg2Ptr = atomicLoad(&heap[ptr2 + 2u]);
+        
+        let val1 = atomicLoad(&heap[arg1Ptr + 1u]);
+        let val2 = atomicLoad(&heap[arg2Ptr + 1u]);
+        
+        var result: u32 = 0u;
+        if (opType == OP_ADD) {
+            result = val1 + val2;
+        } else if (opType == OP_SUB) {
+            result = val1 - val2;
+        } else if (opType == OP_MUL) {
+            result = val1 * val2;
+        }
+        
+        // Allocate result node from free list
+        let freeIdx = atomicSub(&freeListLen, 1u);
+        let resultPtr = atomicLoad(&freeList[freeIdx - 1u]);
+        
+        // Write result node
+        atomicStore(&heap[resultPtr], TAG_NUM);
+        atomicStore(&heap[resultPtr + 1u], result);
+        atomicStore(&heap[resultPtr + 2u], 0u);
+        
+        // Mark consumed nodes as free
+        atomicStore(&heap[ptr1], TAG_FREE);
+        atomicStore(&heap[ptr2], TAG_FREE);
+        
+        // Add to free list
+        let freeIdx1 = atomicAdd(&freeListLen, 1u);
+        atomicStore(&freeList[freeIdx1], ptr1);
+        let freeIdx2 = atomicAdd(&freeListLen, 1u);
+        atomicStore(&freeList[freeIdx2], ptr2);
+    }
+    
+    // APP-LAM reduction
+    if (tag1 == TAG_APP && tag2 == TAG_LAM) {
+        let argPtr = atomicLoad(&heap[ptr1 + 2u]);
+        let bodyPtr = atomicLoad(&heap[ptr2 + 2u]);
+        
+        // Substitute: connect body's port to argument
+        atomicStore(&heap[bodyPtr + 1u], argPtr);
+        
+        // Free consumed nodes
+        atomicStore(&heap[ptr1], TAG_FREE);
+        atomicStore(&heap[ptr2], TAG_FREE);
+        
+        let freeIdx1 = atomicAdd(&freeListLen, 1u);
+        atomicStore(&freeList[freeIdx1], ptr1);
+        let freeIdx2 = atomicAdd(&freeListLen, 1u);
+        atomicStore(&freeList[freeIdx2], ptr2);
+    }
+}
+`;
+
+class GPUEngine {
+  constructor() {
+    this.device = null;
+    this.heapBuffer = null;
+    this.redexCounterBuffer = null;
+    this.redexBuffer = null;
+    this.freeListBuffer = null;
+    this.freeListLenBuffer = null;
+    this.findPipeline = null;
+    this.reducePipeline = null;
+    this.findBindGroup = null;
+    this.reduceBindGroup = null;
+    this.isInitialized = false;
+  }
+  
+  async init(heap) {
+    try {
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported');
+      }
+      
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error('No GPU adapter found');
+      }
+      
+      this.device = await adapter.requestDevice();
+      
+      const heapSizeBytes = heap.heap.byteLength;
+      const maxRedexes = Math.floor(heap.heap.length / (3 * 4)); // Quarter of nodes
+      
+      // Create buffers
+      this.heapBuffer = this.device.createBuffer({
+        size: heapSizeBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      });
+      
+      this.redexCounterBuffer = this.device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      });
+      
+      this.redexBuffer = this.device.createBuffer({
+        size: maxRedexes * 8, // vec2<u32>
+        usage: GPUBufferUsage.STORAGE,
+      });
+      
+      this.freeListBuffer = this.device.createBuffer({
+        size: heap.freeList.length * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      
+      this.freeListLenBuffer = this.device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      
+      // Create compute pipelines
+      const findModule = this.device.createShaderModule({ code: findRedexesShader });
+      const reduceModule = this.device.createShaderModule({ code: reduceRedexesShader });
+      
+      this.findPipeline = this.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: findModule, entryPoint: 'main' }
+      });
+      
+      this.reducePipeline = this.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: reduceModule, entryPoint: 'main' }
+      });
+      
+      // Create bind groups
+      this.findBindGroup = this.device.createBindGroup({
+        layout: this.findPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.heapBuffer } },
+          { binding: 1, resource: { buffer: this.redexCounterBuffer } },
+          { binding: 2, resource: { buffer: this.redexBuffer } },
+        ],
+      });
+      
+      this.reduceBindGroup = this.device.createBindGroup({
+        layout: this.reducePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.redexBuffer } },
+          { binding: 1, resource: { buffer: this.redexCounterBuffer } },
+          { binding: 2, resource: { buffer: this.heapBuffer } },
+          { binding: 3, resource: { buffer: this.freeListBuffer } },
+          { binding: 4, resource: { buffer: this.freeListLenBuffer } },
+        ],
+      });
+      
+      this.isInitialized = true;
+      return true;
+    } catch (e) {
+      console.warn('WebGPU initialization failed:', e);
+      return false;
+    }
+  }
+  
+  async reducePassGPU(heap) {
+    if (!this.isInitialized) {
+      throw new Error('GPU not initialized');
+    }
+    
+    const nodeCount = heap.heap.length / 3;
+    
+    // Upload current heap state
+    this.device.queue.writeBuffer(this.heapBuffer, 0, heap.heap.buffer);
+    
+    // Reset redex counter
+    this.device.queue.writeBuffer(this.redexCounterBuffer, 0, new Uint32Array([0]));
+    
+    // Upload free list
+    const freeListData = new Uint32Array(heap.freeList);
+    this.device.queue.writeBuffer(this.freeListBuffer, 0, freeListData);
+    this.device.queue.writeBuffer(this.freeListLenBuffer, 0, new Uint32Array([heap.freeList.length]));
+    
+    const encoder = this.device.createCommandEncoder();
+    
+    // Pass 1: Find redexes
+    const findPass = encoder.beginComputePass();
+    findPass.setPipeline(this.findPipeline);
+    findPass.setBindGroup(0, this.findBindGroup);
+    findPass.dispatchWorkgroups(Math.ceil(nodeCount / 64));
+    findPass.end();
+    
+    // Pass 2: Reduce redexes
+    const reducePass = encoder.beginComputePass();
+    reducePass.setPipeline(this.reducePipeline);
+    reducePass.setBindGroup(0, this.reduceBindGroup);
+    reducePass.dispatchWorkgroups(Math.ceil(nodeCount / 64));
+    reducePass.end();
+    
+    // Copy results back
+    const readbackBuffer = this.device.createBuffer({
+      size: heap.heap.byteLength,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    encoder.copyBufferToBuffer(this.heapBuffer, 0, readbackBuffer, 0, heap.heap.byteLength);
+    
+    this.device.queue.submit([encoder.finish()]);
+    
+    // Wait and read back
+    await this.device.queue.onSubmittedWorkDone();
+    await readbackBuffer.mapAsync(GPUMapMode.READ);
+    const resultData = new Uint32Array(readbackBuffer.getMappedRange());
+    heap.heap.set(resultData);
+    readbackBuffer.unmap();
+    
+    return true;
+  }
+}
 // ==========================================
 
 // WebAssembly Text Format (WAT) for the IC Runtime
@@ -3076,6 +3395,8 @@ class Runtime {
     this.roots = new Set();
     this.isWasm = false;
     this.wasm = null;
+    this.gpu = null;
+    this.isGPU = false;
   }
   
   async initWasm() {
@@ -3086,6 +3407,22 @@ class Runtime {
       return true;
     } catch (e) {
       console.warn('⚠️ WASM failed to load, using JS runtime:', e.message);
+      return false;
+    }
+  }
+  
+  async initGPU() {
+    try {
+      this.gpu = new GPUEngine();
+      const success = await this.gpu.init(this.heap);
+      if (success) {
+        this.isGPU = true;
+        console.log('✅ WebGPU Engine loaded successfully');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn('⚠️ WebGPU failed to load:', e.message);
       return false;
     }
   }
@@ -3305,6 +3642,8 @@ export default function ICFrameworkDemo() {
   const [reductionLog, setReductionLog] = useState([]);
   const [graphData, setGraphData] = useState(null);
   const [runtimeType, setRuntimeType] = useState('Initializing...');
+  const [useGPU, setUseGPU] = useState(false);
+  const [gpuAvailable, setGpuAvailable] = useState(false);
   
   const heapRef = useRef(null);
   const runtimeRef = useRef(null);
@@ -3317,15 +3656,21 @@ export default function ICFrameworkDemo() {
     heapRef.current = heap;
     runtimeRef.current = runtime;
     
-    // Try to load WASM
-    runtime.initWasm().then(success => {
-      if (success) {
-        setRuntimeType('⚡ WebAssembly (High Performance)');
-        setReductionLog(['System initialized with WASM runtime']);
-      } else {
-        setRuntimeType('🔧 JavaScript (Fallback)');
-        setReductionLog(['System initialized with JS runtime']);
+    // Try to load WASM and GPU
+    Promise.all([
+      runtime.initWasm(),
+      runtime.initGPU()
+    ]).then(([wasmSuccess, gpuSuccess]) => {
+      let type = '🔧 JavaScript (Fallback)';
+      if (wasmSuccess) {
+        type = '⚡ WebAssembly (High Performance)';
       }
+      if (gpuSuccess) {
+        type += ' + 🎮 WebGPU Available';
+        setGpuAvailable(true);
+      }
+      setRuntimeType(type);
+      setReductionLog(['System initialized', `WASM: ${wasmSuccess ? 'Yes' : 'No'}`, `GPU: ${gpuSuccess ? 'Yes' : 'No'}`]);
     });
     
     // Update heap info after refs are set
@@ -3344,7 +3689,7 @@ export default function ICFrameworkDemo() {
     setHeapInfo(info);
   };
   
-  const handleIncrement = () => {
+  const handleIncrement = async () => {
     if (!runtimeRef.current || !heapRef.current) return;
     
     const runtime = runtimeRef.current;
@@ -3384,16 +3729,39 @@ export default function ICFrameworkDemo() {
     // Reduction loop
     const log = ['Starting reduction...'];
     log.push(`Before: ${beforeSnapshot.length} nodes active`);
+    log.push(`Using: ${useGPU && runtime.isGPU ? 'WebGPU (Parallel)' : runtime.isWasm ? 'WebAssembly (CPU)' : 'JavaScript (CPU)'}`);
+    
     let steps = 0;
-    while (runtime.reducePassCPU() && steps < 20) {
-      steps++;
-      const currentNodes = runtime.debugDump();
-      log.push(`Step ${steps}: ${currentNodes.length} nodes active`);
+    const startTime = performance.now();
+    
+    if (useGPU && runtime.isGPU) {
+      // GPU reduction
+      try {
+        await runtime.gpu.reducePassGPU(runtime.heap);
+        steps = 1; // GPU does all reductions in parallel
+        log.push(`GPU reduction complete`);
+      } catch (e) {
+        log.push(`GPU error: ${e.message}, falling back to CPU`);
+        while (runtime.reducePassCPU() && steps < 20) {
+          steps++;
+          const currentNodes = runtime.debugDump();
+          log.push(`Step ${steps}: ${currentNodes.length} nodes active`);
+        }
+      }
+    } else {
+      // CPU reduction
+      while (runtime.reducePassCPU() && steps < 20) {
+        steps++;
+        const currentNodes = runtime.debugDump();
+        log.push(`Step ${steps}: ${currentNodes.length} nodes active`);
+      }
     }
+    
+    const duration = (performance.now() - startTime).toFixed(2);
     
     const afterSnapshot = runtime.debugDump();
     log.push(`After: ${afterSnapshot.length} nodes active`);
-    log.push(`Reduction complete in ${steps} steps`);
+    log.push(`Reduction complete in ${steps} steps (${duration}ms)`);
     
     // Read the result
     const result = runtime.getResult();
@@ -3461,9 +3829,47 @@ export default function ICFrameworkDemo() {
         <div style={{ fontSize: '48px', margin: '20px 0', textAlign: 'center' }}>
           Count: {count}
         </div>
+        
+        {gpuAvailable && (
+          <div style={{ 
+            marginBottom: '20px', 
+            padding: '10px', 
+            background: '#1a1a1a',
+            border: '1px solid #0ff',
+            textAlign: 'center'
+          }}>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={useGPU} 
+                onChange={(e) => setUseGPU(e.target.checked)}
+                style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+              />
+              <span style={{ color: '#0ff', fontSize: '16px' }}>
+                Enable WebGPU Parallel Reduction (Experimental)
+              </span>
+            </label>
+          </div>
+        )}
+        
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
           <button 
-            onClick={handleIncrement}
+            onClick={viewGraph}
+            style={{
+              background: '#00f',
+              color: '#fff',
+              border: 'none',
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+              fontWeight: 'bold'
+            }}
+          >
+            VIEW GRAPH
+          </button>
+        </div>
+      </div>handleIncrement}
             style={{
               background: '#0f0',
               color: '#000',
@@ -3494,6 +3900,21 @@ export default function ICFrameworkDemo() {
           </button>
           <button 
             onClick={viewGraph}
+            style={{
+              background: '#00f',
+              color: '#fff',
+              border: 'none',
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+              fontWeight: 'bold'
+            }}
+          >
+            VIEW GRAPH
+          </button>
+        </div>
+      </div>viewGraph}
             style={{
               background: '#00f',
               color: '#fff',
