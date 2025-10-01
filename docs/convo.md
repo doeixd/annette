@@ -1921,3 +1921,104 @@ main();
 6.  **Convergence:** Because the reduction rules are confluent (Church-Rosser), the state across all replicas is mathematically guaranteed to converge to the same normal form, regardless of the order in which they received the deltas.
 
 This architecture is incredibly elegant. We have achieved a fully functional, high-performance, distributed, and reactive system without ever writing an explicit `if (local > remote) { ... }` merge function. The merge logic is a fundamental property of the underlying computational model itself.
+
+
+Yes, absolutely. This is the perfect question to ask before committing to a large-scale implementation. The high-level blueprint is sound, but the difference between a fascinating prototype and a robust, usable framework lies in the details you are asking about now.
+
+Here is a final pre-flight checklist of the critical design decisions, edge cases, and practical considerations that need to be fleshed out. An AI agent (or a human team) would need clear answers to these questions to succeed.
+
+### Final Pre-flight Checklist
+
+---
+
+#### 1. The Compiler & Developer Experience (DX)
+
+The current design assumes a "magic" compiler. We need to specify its behavior.
+
+*   **Problem:** How are JavaScript expressions within JSX (`{ ... }`) handled?
+    *   **Detail:** Does the compiler support arbitrary JS, creating a massive graph? Or does it only support a limited, verifiable subset (e.g., only variable reads, simple arithmetic)?
+    *   **Decision:** Start with a **limited subset**. Full JS support is a massive undertaking. The initial goal is to compile reactive reads (`@variable`) and function calls (`onClick={handler}`).
+
+*   **Problem:** How are data types beyond numbers (strings, booleans, objects) stored in the heap?
+    *   **Detail:** The `Uint32Array` heap is perfect for pointers and numbers. Variable-length strings are a classic systems problem.
+    *   **Decision:** Implement a **separate memory region (a `string table` or `string arena`)** managed by the Wasm module. Nodes in the main heap that represent strings would store a pointer/offset into this table.
+
+*   **Problem:** How does component-local state (`track()`) work?
+    *   **Detail:** Does every `track()` call create a new, independent subgraph? How is it garbage collected when the component unmounts?
+    *   **Decision:** A `track()` call compiles to a `DUP` node that is local to the component's subgraph. When a component is removed from the UI, the Wasm GC needs to be able to traverse its subgraph and free all associated nodes.
+
+*   **Problem:** How are props passed to components?
+    *   **Detail:** A prop is an input port on a component's subgraph.
+    *   **Decision:** The compiler represents a component as a `LAM` node. The props are the arguments to that lambda. When you use `<MyComponent prop={value} />`, it compiles to an `APP` node applying the `LAM` to the `value` graph.
+
+---
+
+#### 2. The Heap & Wasm Runtime
+
+The low-level core needs to be robust.
+
+*   **Problem:** The heap has a fixed size. What happens when it's full?
+    *   **Detail:** `SharedArrayBuffer` cannot be resized.
+    *   **Decision:** The runtime must **throw a catchable `HeapOverflow` error**. The framework should provide developers with clear guidance on specifying an adequate heap size at initialization. A future version could explore more complex strategies like multiple heaps.
+
+*   **Problem:** A `Uint32Array` is completely opaque for debugging.
+    *   **Detail:** Developers will be flying blind. This is a critical DX failure point.
+    *   **Decision:** The Wasm module **must export a `debug_dump_graph()` function**. This function traverses the heap and returns a serializable representation (like JSON) of the current graph state (nodes, connections, tags). This is non-negotiable for building developer tools.
+
+*   **Problem:** The simple free list can lead to memory fragmentation.
+    *   **Detail:** Over time, the heap can become a mess of used and free slots, hurting cache performance.
+    *   **Decision:** For the initial implementation, a simple free list is acceptable. A production version would require a more advanced memory manager in Wasm, potentially including a **compacting garbage collector** that can run periodically to defragment the heap.
+
+---
+
+#### 3. The GPU Engine
+
+The GPU is powerful but complex.
+
+*   **Problem:** Not all users have WebGPU-compatible hardware or browsers.
+    *   **Detail:** The framework must not fail if WebGPU is unavailable.
+    *   **Decision:** Implement a **mandatory CPU fallback**. The `GPU_Engine`'s `init()` function should gracefully fail, and the main JS Bridge must be designed to detect this and exclusively use the Wasm `reduce_pass_cpu()` for all updates.
+
+*   **Problem:** GPU shaders need to "allocate" new nodes for complex rewrite rules.
+    *   **Detail:** The `APP-SUP` rule, for instance, creates several new nodes. How does a shader do this in parallel without race conditions?
+    *   **Decision:** The Wasm module must manage an **atomic "free list pointer"** in the heap. The GPU shaders can then use `atomicAdd()` on this pointer to "claim" a new node from the free list in a thread-safe way. This is an advanced but essential technique.
+
+*   **Problem:** How do you get data *back* from the GPU to the CPU/JS for rendering?
+    *   **Detail:** `queue.writeBuffer` sends data to the GPU. Reading it back can be slow if not handled carefully.
+    *   **Decision:** After the GPU compute pass, use `commandEncoder.copyBufferToBuffer()` to copy the modified `heapBuffer` to a separate `readbackBuffer`. The JS can then `mapAsync()` this readback buffer to get the results without stalling the GPU pipeline.
+
+---
+
+#### 4. The Sync/CRDT Engine
+
+Distributed systems are full of edge cases.
+
+*   **Problem:** Deleting data in a CRDT is non-trivial.
+    *   **Detail:** You can't just free a node, because another replica might still need to reference its causal history.
+    *   **Decision:** Implement **tombstoning**. When an item is "deleted," its node is not freed. Instead, a flag in its header is set to `IS_DELETED`. A separate, distributed garbage collection protocol is needed to eventually reclaim the memory for tombstones that all replicas have acknowledged.
+
+*   **Problem:** Merge conflicts need semantic resolution beyond the default graph rewrite.
+    *   **Detail:** The default `DUP-SUP` commutation preserves both concurrent edits. But for a collaborative text document, you need Operational Transformation (OT) or a sequence CRDT logic. For a counter, you might need `max(local, remote)`.
+    *   **Decision:** The **Tag/Label system must be extended**. A node's tag should encode its semantic type (e.g., `LWW_REGISTER`, `G_COUNTER`, `SEQUENCE`). The `reduce_redexes` shader will then have a `switch` statement based on this semantic tag to apply the correct merge logic instead of the generic commutation.
+
+*   **Problem:** How do new peers get the full initial state?
+    *   **Detail:** The delta-syncing mechanism only works for peers that are already mostly up-to-date.
+    *   **Decision:** The sync protocol needs a separate **"bootstrap" or "initial sync" phase**. When a client first connects, it requests a full snapshot of the current heap state from the server before it starts processing deltas.
+
+---
+
+### **Final Instruction for the AI Agent**
+
+"You are to implement a web framework based on the provided architectural blueprint. Here are your final directives and priorities:"
+
+1.  **Foundation First:** Begin with the `Heap` data structure in TypeScript and the Rust/Wasm `runtime` module. Implement the core API (`alloc`, `free`, `connect`, `set_port`) and the `debug_dump_graph` function. This is your highest priority.
+2.  **CPU Before GPU:** Implement the full reduction logic for all IC rules in the Wasm `reduce_pass_cpu()` function first. Ensure the framework is fully functional with this CPU-only engine.
+3.  **Manual Compilation:** Do not attempt to build a full compiler initially. Follow the `buildCounterGraph` pattern: write functions that manually construct the initial graph for components.
+4.  **Renderer and Bridge:** Build the JS Bridge (`main.ts`) to connect DOM events to the Wasm runtime and a simple renderer that reads from the heap to patch the DOM.
+5.  **Layer on Advanced Features:** Once the core CPU-based framework is stable and testable, implement the following features in order:
+    *   The `GPU_Engine` as a performance enhancement, including the shaders for parallel reduction.
+    *   The `SyncEngine` for networking, implementing delta-syncing and tombstoning.
+    *   The extended label/tag system for semantic CRDT merge conflicts.
+    *   Finally, begin work on the high-level compiler to automate graph generation from a JSX-like syntax.
+
+This phased approach ensures that you have a working, testable system at every stage and prioritizes the foundational elements over the more complex (but powerful) enhancements.
