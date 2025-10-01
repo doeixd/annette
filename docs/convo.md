@@ -5096,3 +5096,77 @@ You will implement the framework in five sequential phases.
     *   **Initial Sync:** The `SyncEngine` needs a `bootstrap()` method. On first connect, it sends a `REQUEST_SNAPSHOT` message. The server (or a designated peer) responds by calling its own `wasm.serialize_delta` on the *entire root* of the application state, sending this large payload back. The new client applies this snapshot before starting to process incremental deltas.
 
 This detailed, tactical guide provides a clear, step-by-step path from a blank canvas to a fully-featured, high-performance, and philosophically coherent framework.
+
+This is an outstanding question that gets to the very core of how this framework would function as a real-world operating environment. In traditional systems, scheduling and multitasking are complex features handled by an OS kernel or a sophisticated framework scheduler (like React's).
+In our Interaction Calculus framework, these are not bolted-on features. They are natural, emergent properties of the graph reduction model. The system doesn't need a separate, complex scheduler because the "scheduling" is encoded directly into the structure of the graph itself.
+The Fundamental Shift: From an Event Loop to a Reduction Loop
+Traditional Model (React/Solid): A central event loop receives tasks (user input, network responses). A scheduler (like React Fiber) decides the priority of these tasks, works on them for a bit, and yields back to the browser's main thread to prevent blocking. It's an imperative scheduling model.
+IC Framework Model: The JS Bridge runs a continuous reduction loop. Its only job is to tell the Wasm/GPU engine, "Reduce the graph." The structure of the graph itself dictates which parts are most "energetic" and should be reduced first. Scheduling becomes a matter of shaping the graph.
+1. Cooperative Multitasking: The Reduction Pass is the "Quantum"
+The most important concept is that a single reduction pass (one call to reduce_pass_cpu() or reduce_pass_gpu()) is the fundamental unit of work, or "time slice" (quantum).
+No Blocking, Ever: A while(true) loop in JavaScript blocks the main thread. A recursive LAM that calls itself in the IC graph does not block the system. The reduce() function will perform one step of the recursion (one APP-LAM annihilation) and then return control to the JS Bridge. The bridge can then decide if it has done enough work for this frame and yield to the browser using requestAnimationFrame.
+Inherent "Yielding": Every reduction step is an implicit yield. This makes the entire system cooperatively multitasked by default. A long-running computation (like rendering a massive data visualization) is simply a graph that requires many reduction passes to stabilize. The bridge can interleave these passes with other work, ensuring the UI never freezes.
+2. Scheduling: Priority is a Structural Property
+To explicitly manage priorities (e.g., user input is more important than a background fetch), we introduce a new primitive: the Scheduler Agent. This is not a special piece of the runtime; it's just a specific graph pattern.
+Imagine a special type of SUP node called a PRIORITY_SUP.
+code
+Code
++-------------------+
+        | DUP (&MAIN_LOOP)  | <-- The main loop observes the task list
+        +-------------------+
+                |
+                v
+        +-------------------+
+        | PRIORITY_SUP      |
+        | (The Task List)   |
+        +-------------------+
+        /           \
+       /             \
+      v               v
++-----------+     +-----------+
+| Task A    |     | Task B    |
+| Prio: HIGH|     | Prio: LOW |
++-----------+     +-----------+
+The interaction rule for the PRIORITY_SUP is simple: it will only ever interact on its highest-priority active port.
+If Task A is a reducible graph (e.g., a UI update from a button click), the PRIORITY_SUP will allow the main loop's DUP to interact with it.
+It will refuse to interact with Task B until Task A has been fully reduced to a stable (non-reducible) state.
+The Role of the JS Bridge (The "Kernel")
+The JS Bridge acts as the OS kernel. When a new event occurs:
+User Click (High Priority): The bridge receives the click event. It calls Wasm to build a subgraph for the UI update and connects it to the PRIORITY_SUP with a HIGH priority label.
+Network Response (Low Priority): A background fetch completes. The bridge builds a subgraph to process the data and connects it to the PRIORITY_SUP with a LOW priority label.
+Trigger Reduction: The bridge starts the reduction loop. The PRIORITY_SUP's own rules ensure that the Wasm/GPU engine will only find and reduce active pairs within the Task A subgraph until it is completely finished. Only then will reductions in Task B be allowed to occur.
+3. Collaborative Multitasking: Forking Reality with DUP
+This is where the model truly shines. "Collaborative multitasking" means having multiple independent "threads" of computation that can exist and evolve simultaneously.
+The DUP node is the universal fork() primitive. It takes one input and creates two identical, independent outputs.
+Scenario: We need to render a complex UI while simultaneously processing a large dataset for a chart in the background.
+Forking the State: We take our main application state and connect it to a DUP node.
+code
+Code
++----------------+
+          | App State      |
+          +----------------+
+               |
+               v
+         +-----------+
+         | DUP (&FORK) | <-- Forks the state into two realities
+         +-----------+
+         /           \
+        /             \
+       v               v
++-----------------+   +-----------------+
+| APP (Render UI) |   | APP (Process    |
+| (Prio: HIGH)    |   |      Data)      |
+|                 |   | (Prio: LOW)     |
++-----------------+   +-----------------+
+Independent Evolution: We now have two completely separate APP nodes.
+One applies the main UI rendering function to its copy of the state.
+The other applies the data processing function to its own identical copy of the state.
+Parallel Reduction: These two subgraphs are causally independent. They do not interact with each other. If we are using the WebGPU engine, the find_redexes shader will find active pairs in both subgraphs simultaneously, and the reduce_redexes shader will perform reductions on both in parallel.
+Scheduling & Collaboration: We can combine this with the priority system. The "Render UI" application would be given HIGH priority. The JS Bridge would instruct the reduction loop to spend, for example, 80% of its frame budget reducing the UI task and 20% reducing the data processing task. The user sees a perfectly smooth, interactive UI, while in the background, the chart data is being computed incrementally, frame by frame.
+Joining / Merging: When the background task is complete, its final result (e.g., a new data structure for the chart) can be "merged" back into the main application state using another SUP-DUP interaction. The UI component for the chart, which was subscribed to the background task's result, will then automatically render the new data.
+Summary of Benefits
+This integrated model for scheduling and multitasking is superior to traditional approaches because:
+It is not an afterthought: It is a fundamental property of the core computational model.
+Provably Safe: The rules of the calculus guarantee that parallel tasks cannot interfere with each other unless explicitly merged, eliminating entire classes of race conditions.
+Fine-Grained Control: The JS Bridge has millisecond-level control over how much work is done on which task, allowing for sophisticated scheduling strategies (like React's time-slicing and lane model) to be implemented very simply.
+Unified Model: The same primitives (SUP, DUP) are used for reactivity, asynchronicity, concurrency, and scheduling. This creates an incredibly powerful and conceptually clean system.
