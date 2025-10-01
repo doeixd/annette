@@ -4688,3 +4688,411 @@ The framework will be implemented in a phased approach. The AI Agent must follow
     *   **Affinity Checking:** Automatically insert `DUP` nodes where a variable is used more than once.
 
 This comprehensive plan provides a clear, phased approach to building the Aura framework. By following this blueprint, the AI agent can systematically construct each layer of the architecture, resulting in a robust, performant, and feature-complete system.
+
+### **The Core Concept: Persistent Identity Nodes**
+
+We will introduce a new primitive node type, the **Persistent Identifier (`PID`)**.
+
+A `PID` node is not a container for data itself. It is a **stable, serializable pointer** to data that is assumed to exist in an external, durable storage system. It is the bridge between the ephemeral, in-memory world of the Aura heap and the persistent, outside world.
+
+#### The `PID` Node Structure:
+
+A `PID` node will be represented in the heap with a new tag, `TAG_PID`. Its structure will encode the information you requested:
+
+*   **Word 0 (Header):**
+    *   `Tag`: `TAG_PID`.
+    *   `Flags`: Standard flags.
+*   **Word 1 (Table Name Pointer):** A pointer to a `TAG_STRING` node in the heap that holds the "table name" (e.g., "users", "todos").
+*   **Word 2 (Record Key Pointer):** A pointer to another node (e.g., `TAG_STRING` or `TAG_NUM`) in the heap that holds the "sortable key" (e.g., a UUID, a timestamp, a username).
+
+**Example:** A reference to a user record might look like this in the graph:
+
+```
+// The PID node itself. This is the stable reference.
+ptr(100): [Header: TAG_PID]
+ptr(101): Port1 -> ptr(103)  // -> "users"
+ptr(102): Port2 -> ptr(106)  // -> "user_alice"
+
+// The string data for the table name
+ptr(103): [Header: TAG_STRING]
+ptr(104): -> pointer to string arena for "users"
+
+// The string data for the key
+ptr(106): [Header: TAG_STRING]
+ptr(107): -> pointer to string arena for "user_alice"
+```
+
+This `PID` node at `ptr(100)` is the canonical, serializable representation of `users:user_alice`.
+
+---
+
+### **How Persistence is Implemented: The Role of the JS Bridge**
+
+The Aura runtime itself remains pure and knows nothing about databases. The entire persistence mechanism is orchestrated by the **JS Bridge**, which acts as the interface to the "impure" world of I/O.
+
+Developers will provide a **Persistence Adapter** to the framework during initialization.
+
+```typescript
+// Developer's persistence layer implementation
+const surrealDbAdapter = {
+  async get(tableName, key) {
+    // Logic to query SurrealDB: `SELECT * FROM ${tableName}:${key}`
+    return db.select(`${tableName}:${key}`);
+  },
+  async set(tableName, key, data) {
+    // Logic to update SurrealDB: `UPDATE ${tableName}:${key} CONTENT ${data}`
+  },
+  // ... other methods like `query`, `delete`, etc.
+};
+
+// Initializing the Aura framework
+const aura = new AuraRuntime({
+  persistence: surrealDbAdapter,
+  // ... other config
+});
+```
+
+The JS Bridge will use this adapter to handle data loading and saving, triggered by specific graph patterns.
+
+---
+
+### **Fleshing Out the Lifecycle: `createResource` with Persistence**
+
+Let's revisit our `createResource` primitive and see how it works with `PID`s.
+
+**Scenario:** A component needs to display a user's profile.
+`const user = createResource(() => users.get("user_alice"));`
+
+The developer-provided `users.get("user_alice")` is a helper function that compiles down to a `PID` node.
+
+#### 1. The Initial Graph: A "Faulting" Pointer
+
+The call to `createResource` now generates a slightly different initial graph.
+
+```
+          +-----------+
+          | DUP (&RES)|  <-- Stable UI reference
+          +-----------+
+                |
+                v
+          +-----------+
+          | SUP (&RES)|
+          +-----------+
+          /           \
+         /             \
+        v               v
+  +-----------+     +-----------+
+  | PENDING   |     | PID Node  |
+  | (Initial  |     | "users":  |
+  |  State)   |     | "alice"   |
+  +-----------+     +-----------+
+```
+
+Notice the `RESOLVED` branch is no longer empty (`ERA`). It contains the `PID` node. This `PID` is a **"faulting" pointer**. It represents data that *should* be here but has not yet been loaded from the persistent store.
+
+#### 2. The Loading Process (Data Faulting)
+
+1.  **Pattern Recognition:** The JS Bridge's main loop scans for `DUP` nodes that are pointing to a `SUP` whose `RESOLVED` branch contains a `PID`. This is the "data fault" pattern.
+
+2.  **Trigger Persistence Adapter:** When the bridge finds this pattern, it:
+    *   Reads the table name and key from the `PID` node's subgraph.
+    *   Calls the developer's adapter: `persistence.get("users", "user_alice")`.
+
+3.  **Graph Rewrite (Hydration):** When the `persistence.get()` promise resolves with the user data (e.g., `{ name: "Alice", email: "..." }`), the bridge performs a crucial graph rewrite:
+    *   It allocates a new subgraph for the JSON data received from the database.
+    *   It finds the `PID` node in the resource's `SUP`.
+    *   It **replaces the `PID` node with the newly allocated data subgraph.**
+
+4.  **Automatic UI Update:** This rewrite triggers a reduction. The new data propagates through the `DUP` to the UI, which seamlessly transitions from the "pending" state to displaying the user's profile. The data has been "paged in" or "hydrated" from the persistent store into the live application graph.
+
+#### 3. The Saving Process (Data Dehydration/Write-Back)
+
+**Scenario:** The user edits their name and clicks "Save". This triggers a server action.
+
+1.  **Local Graph Mutation:** The user's typing modifies the `name` node within the in-memory user data subgraph. The graph is now "dirty."
+
+2.  **Trigger Action:** The "Save" button triggers an action. This action's input is a pointer to the modified user data subgraph.
+
+3.  **Pattern Recognition:** The JS Bridge recognizes the "save action" pattern. It:
+    *   Traverses the "dirty" user subgraph and **dehydrates** it back into a plain JavaScript object.
+    *   It finds the original `PID` associated with this data (which can be stored as a flag or in a parallel metadata structure).
+    *   It calls the persistence adapter: `persistence.set("users", "user_alice", dehydratedObject)`.
+
+4.  **Optimistic State:** The action immediately resolves locally, perhaps updating a `last_saved` timestamp in the UI. If the `persistence.set()` promise rejects, the action can enter an "error" state, allowing the UI to show a "Save Failed" message.
+
+### **How this Design Enables Pluggable Persistence**
+
+*   **Decoupling:** The core Aura runtime (Wasm/GPU) remains completely ignorant of persistence. It only knows about `PID` nodes as a specific type of particle. It has no idea what "SurrealDB" or "IndexedDB" is.
+*   **Simple Interface:** All the database-specific logic is encapsulated within the developer-provided `PersistenceAdapter`. The framework only interacts with this adapter through a clean, simple API (`get`, `set`, `delete`).
+*   **Flexibility:** A developer could write an adapter for anything:
+    *   `IndexedDBAdapter` for pure client-side persistence.
+    *   `RestApiAdapter` for communicating with a standard REST backend.
+    *   `LocalStorageAdapter` for simple key-value storage.
+    *   `SurrealDbAdapter` for a rich, real-time database.
+    *   A `MockAdapter` for testing.
+*   **Serialization:** The `PID` node provides a stable, serializable way to reference durable data. When you serialize the application state (e.g., for SSR or saving UI state), you don't save the entire user object; you just save the lightweight `PID` node. When the state is deserialized, the "data faulting" process will automatically reload the data from the persistent store as needed.
+
+This design elegantly integrates the concept of durable, external data into the core reactive model. It treats data loading as just another form of asynchronous resolution, leveraging the same powerful `SUP`/`DUP` mechanics, while providing a clear and flexible interface for developers to connect to any storage backend they choose.
+
+
+### **Definitive Implementation Mandate & Tactical Guide for the AURA Framework**
+
+**To the Implementing AI Agent:**
+
+This is your complete and final directive. It contains the philosophy, architecture, and—most importantly—the detailed, step-by-step "how-to" for implementing the AURA framework. Adhere to this guide strictly. All necessary information is contained within.
+
+#### **PART I: THE GUIDING PHILOSOPHY (The "Why")**
+
+*(This section remains the same as the previous response, establishing the core principles of "UI as a Reducible Expression", "The Physics Metaphor", "Structure is Semantics", and "Labels are Identity & Causality". The AI Agent must internalize this first.)*
+
+#### **PART II: THE ARCHITECTURE (The "What")**
+
+*(This section remains the same, outlining the five core components: The Shared Heap, Wasm Runtime, WGPU Pipeline, JS Bridge, and Compiler.)*
+
+---
+
+#### **PART III: THE TACTICAL IMPLEMENTATION PLAN (The "How")**
+
+You will implement the framework in five sequential phases.
+
+##### **Phase 1: The Foundation - Heap & Wasm CPU Engine**
+
+**Objective:** Create a stable, CPU-only runtime for graph management and reduction.
+
+**Task 1.1: The Shared Heap (`src/core/heap.ts`)**
+    *   **How-To:**
+        1.  Create a `Heap` class in TypeScript.
+        2.  The constructor will take `sizeInNodes` as an argument.
+        3.  Inside the constructor, create the shared memory: `this.memory = new SharedArrayBuffer(sizeInNodes * 12);`.
+        4.  Create the view: `this.heap = new Uint32Array(this.memory);`.
+        5.  Define numeric constants for all `TAG_` types (`TAG_FREE=0`, etc.) as specified. These must be globally consistent.
+        6.  Implement helper methods for reading the heap from JS:
+            *   `getTag(ptr) { return this.heap[ptr / 4] & 0xFF; }` (Note: `ptr` is a byte offset, so divide by 4 for the `Uint32Array` index).
+            *   `getLabel(ptr) { return (this.heap[ptr / 4] >> 8) & 0xFFFF; }`.
+            *   `getPort1(ptr) { return this.heap[ptr / 4 + 1]; }`.
+            *   `getPort2(ptr) { return this.heap[ptr / 4 + 2]; }`.
+
+**Task 1.2: The Wasm CPU Engine (`src/core/runtime/`)**
+    *   **Action:** Create a new Rust library project using `wasm-pack build --target web`.
+    *   **How-To (in `lib.rs`):**
+        1.  **Memory Management:**
+            *   Define a global static `static mut HEAP: &mut [u32]` and `static mut FREE_LIST: Vec<u32>`.
+            *   Implement `init(heap_ptr, len)`: Use `std::slice::from_raw_parts_mut` to create the `HEAP` slice. Populate the `FREE_LIST` by iterating from `0` to `len` with a step of `3`.
+            *   Implement `alloc_node(header)`: `let ptr = FREE_LIST.pop().expect("Heap overflow!");`. Write the header and zero out the two port words. Return `ptr`.
+            *   Implement `free_node(ptr)`: Mark the node's header as `TAG_FREE`. Push `ptr` back to `FREE_LIST`.
+            *   Implement `connect_ports(ptr1, port_idx1, ptr2)`: This is critical. `HEAP[ptr1 + port_idx1] = ptr2;`. Symmetrically, `HEAP[ptr2 + free_port_idx] = ptr1;`.
+        2.  **Core Reduction Logic (`reduce_pass_cpu`)**:
+            *   This function must return a boolean (`true` if a reduction occurred).
+            *   Use a `for` loop to iterate over the `HEAP` with a step of `3`.
+            *   Inside the loop, read the tag: `let tag = HEAP[i] & 0xFF;`.
+            *   Use a `match tag` statement to find a "redex" (an active pair). For example, inside `TAG_APP`:
+                *   `let fun_ptr = HEAP[i + 1];`
+                *   `let fun_tag = HEAP[fun_ptr as usize] & 0xFF;`
+                *   `if fun_tag == TAG_LAM { reduce_app_lam(i, fun_ptr); return true; }`
+            *   **`reduce_app_lam(app_ptr, lam_ptr)`:**
+                *   Get pointers: `let arg_ptr = HEAP[app_ptr + 2];`, `let var_binder_ptr = HEAP[lam_ptr + 1];`.
+                *   Find the `VAR`'s usage site. This requires traversal. A simple way is to follow the `VAR`'s *other* port (the one not connected to the `LAM`).
+                *   Perform the substitution: `connect_ports` between the `arg_ptr` and the usage site.
+                *   `free_node` for the `APP`, `LAM`, and `VAR` nodes.
+            *   **`reduce_dup_sup(dup_ptr, sup_ptr)`:**
+                *   Get labels: `let dup_label = (HEAP[dup_ptr] >> 8) & 0xFFFF;`, `let sup_label = (HEAP[sup_ptr] >> 8) & 0xFFFF;`.
+                *   **If `dup_label == sup_label` (Annihilation):** Get the `SUP`'s children (`HEAP[sup_ptr+1]`, `HEAP[sup_ptr+2]`). Find the `DUP`'s variables and rewire them to the children. `free_node` for `DUP` and `SUP`.
+                *   **If `dup_label != sup_label` (Commutation):** This is the most complex rule. You must `alloc_node` for two new `SUP` nodes and two new `DUP` nodes, then perform the precise rewiring as specified in the `IC.md` context document.
+        3.  **Debugging API:**
+            *   Implement `debug_dump_graph() -> Vec<u32>`. This function simply clones the current `HEAP` slice and returns it.
+
+---
+
+##### **Phase 2: The Interface - Bridge, Renderer, & Manual Compilation**
+
+**Objective:** Get a visible, interactive application running.
+
+**Task 2.1: The JS Bridge & Renderer (`src/main.ts`)**
+    *   **How-To:**
+        1.  Create an `async function main()`.
+        2.  Inside, instantiate the `Heap`.
+        3.  Load the Wasm module: `const wasm = await import('./core/runtime/pkg'); await wasm.default();`.
+        4.  Initialize: `wasm.init(heap.heap.byteOffset, heap.heap.length);`.
+        5.  Call your manual compilation function to build the initial graph.
+        6.  Implement `render()`: It must get a pointer to the root of the state (e.g., the `countPtr`). It then reads the value from the heap: `heap.heap[countPtr / 4 + 1]` and sets `element.textContent`.
+        7.  Implement `update()`: It contains a `while(wasm.reduce_pass_cpu()) {}` loop, followed by a call to `render()`.
+        8.  Attach an `onclick` listener. The handler's job is to call a Wasm function (e.g., `wasm.create_increment_app(countPtr, handlerPtr)`) that creates the `APP` node in the heap, then call `update()`.
+
+**Task 2.2: Manual Compilation (`src/compiler/output.ts`)**
+    *   **How-To:**
+        1.  Create `buildCounterGraph(wasm)`.
+        2.  Call `wasm.alloc_node` for each node needed (the `NUM` for 0, the `NUM` for 1, the `LAM`, the `APP`, the `VAR`, the `OP`).
+        3.  Store the returned pointers.
+        4.  Call `wasm.connect_ports` to wire them up correctly. For `λx.(+ x 1)`, you would connect the `LAM`'s body to the `OP` node, the `OP`'s inputs to the `VAR` and the `NUM(1)`, etc.
+
+---
+
+##### **Phase 3: The Accelerator - GPU Engine**
+
+**Objective:** Move the reduction logic to the GPU for massive parallelism.
+
+**Task 3.1: The WGSL Shaders (`src/core/gpu_shaders.wgsl`)**
+    *   **How-To:**
+        1.  Define storage buffers that match the JS side: `heap`, `redex_counter`, `redex_buffer`.
+        2.  **`find_redexes` shader:**
+            *   Use `@workgroup_size(64)`. The `global_invocation_id.x` gives you the node index to check.
+            *   Calculate the pointer: `let ptr = global_id.x * 3u;`.
+            *   Perform the same read-only checks as the Wasm `reduce_pass_cpu` to find a redex.
+            *   If a redex is found, get a unique index for storage: `let redex_idx = atomicAdd(&redex_counter, 1u);`.
+            *   Store the pointers of the two interacting nodes: `redex_buffer[redex_idx] = vec2<u32>(ptr1, ptr2);`.
+        3.  **`reduce_redexes` shader:**
+            *   This shader also uses `@workgroup_size(64)`. The `global_invocation_id.x` is now the `redex_idx`.
+            *   Read the pair from `redex_buffer`.
+            *   **IMPORTANT:** All reads and writes to the main `heap` buffer in this shader *must* use `atomicLoad` and `atomicStore` to prevent race conditions.
+            *   Implement the same interaction rule logic as the Wasm version, but using atomic operations.
+            *   To free a node, `atomicStore(&heap[ptr], TAG_FREE);`. A separate GC pass would be needed in production, but for now this is sufficient.
+
+**Task 3.2: The GPU Orchestrator (`src/core/gpu.ts`)**
+    *   **How-To:**
+        1.  Create a `GPU_Engine` class.
+        2.  In `init()`:
+            *   Use `navigator.gpu.requestAdapter()` and `adapter.requestDevice()`. Wrap this in a `try/catch` to handle the CPU fallback.
+            *   Create `GPUBuffer`s for the heap and redex buffers with `device.createBuffer`.
+            *   Create `GPUShaderModule` from the WGSL code string.
+            *   Create two `GPUComputePipeline`s, one for each shader entry point.
+            *   Create the `GPUBindGroup`s that link the buffers to the pipelines.
+        3.  In `reduce_pass_gpu()`:
+            *   `device.queue.writeBuffer(this.heapBuffer, 0, heap.memory);` to upload the current state.
+            *   `device.queue.writeBuffer(this.redexCounterBuffer, 0, new Uint32Array([0]));` to reset the counter.
+            *   Create a `GPUCommandEncoder`.
+            *   Begin a compute pass, set the pipeline and bind group for `find_redexes`, and `dispatchWorkgroups`. End the pass.
+            *   Begin a new compute pass for `reduce_redexes`, set pipeline/bind groups, and `dispatchWorkgroups`. End the pass.
+            *   Submit the command encoder.
+            *   Wait for completion with `device.queue.onSubmittedWorkDone()`.
+            *   To get results back, create a `readbackBuffer` with `GPUBufferUsage.MAP_READ`, use `encoder.copyBufferToBuffer`, submit, then `await readbackBuffer.mapAsync(GPUMapMode.READ)`.
+
+---
+
+##### **Phase 4 & 5 are implemented as extensions to this core, following the logic and patterns established above. The agent should now have a concrete, step-by-step mental model for how to translate the architectural concepts into low-level, high-performance code.**
+
+### **PART III: THE TACTICAL IMPLEMENTATION PLAN (Continued)**
+
+##### **Phase 4: Advanced Capabilities - Async, Persistence, & CRDT Sync**
+
+**Objective:** Transform the core runtime into a powerful engine for real-world, data-driven, and collaborative applications by modeling all advanced concepts as graph structures.
+
+**Task 4.1: Asynchronous Operations (`createResource`, Actions)**
+
+*   **How-To:**
+    1.  **Define New Tags:** In `heap.ts` and your Wasm/WGSL constants, add `TAG_PENDING`, `TAG_RESOLVED`, `TAG_ERROR`. These are simple structural markers.
+    2.  **Implement the Async Graph Pattern:** In your manual compilation file (`compiler/output.ts`), create a helper function `buildAsyncGraph(wasm)`.
+        *   This function allocates the core `DUP -> SUP` structure.
+        *   `const dupPtr = wasm.alloc_node(header_for(TAG_DUP, unique_label));`
+        *   `const supPtr = wasm.alloc_node(header_for(TAG_SUP, same_unique_label));`
+        *   `const pendingPtr = wasm.alloc_node(header_for(TAG_PENDING));`
+        *   `const resolvedPtr = wasm.alloc_node(header_for(TAG_ERA));` // Initially empty
+        *   Wire them up: `wasm.connect_ports(dupPtr, 1, supPtr);`, `wasm.connect_ports(supPtr, 1, pendingPtr);`, `wasm.connect_ports(supPtr, 2, resolvedPtr);`.
+        *   Return the `dupPtr` as the stable reference.
+    3.  **Enhance the JS Bridge (`main.ts`):**
+        *   The bridge's main loop (or a dedicated observer) must now scan the heap for this pattern. A simple way is to maintain a `live_resources` set of pointers to resource `DUP` nodes.
+        *   For each live resource, the bridge checks the `SUP`'s branches. If it sees a `PENDING` node that it hasn't processed yet, it triggers the associated JavaScript `fetch` function.
+        *   Use a `Map` in the bridge to track which fetches are in-flight: `Map<pendingPtr, Promise>`.
+        *   When the promise resolves, the `.then()` handler gets the `pendingPtr`, finds its parent `SUP`, and calls a new Wasm function `wasm.rewrite_port(supPtr, 2, newDataPtr)` to atomically replace the `ERA` node on the resolved branch with the fetched data.
+        *   Then, it calls `update()` to trigger the reduction pass. The UI update is automatic.
+
+*   **Gotcha:** The unique `Label` on the `DUP`/`SUP` pair is the stable ID for the async operation. The JS Bridge uses this to correlate the promise with the correct graph location.
+
+**Task 4.2: Persistence Layer (`TAG_PID`)**
+
+*   **How-To:**
+    1.  **Define `TAG_PID`:** Add the new tag to your constants.
+    2.  **String Management (Wasm):** Your Wasm module needs a way to handle strings. A simple approach is a "string arena":
+        *   Add a large `static mut STRING_ARENA: Vec<u8>` and a `STRING_MAP: HashMap<String, usize>` to your Rust code.
+        *   Export a function `wasm.alloc_string(str)` that adds a string to the arena (if not already present) and returns its byte offset.
+    3.  **Implement `buildPIDGraph(wasm, tableName, recordKey)`:** This function allocates a `TAG_PID` node and two `TAG_STRING` nodes. It calls `wasm.alloc_string` for the table and key, then sets the pointers in the string nodes. Finally, it connects the string nodes to the `PID` node's ports.
+    4.  **Implement the Persistence Adapter Interface:**
+        *   In the JS Bridge, define a `PersistenceAdapter` interface: `interface { get(table, key); set(table, key, data); }`.
+        *   The bridge will accept an implementation of this interface at initialization.
+    5.  **Implement Data Faulting:**
+        *   In the bridge's pattern-recognition logic, add a check for `DUP -> SUP -> PID`.
+        *   When found, read the table/key pointers from the `PID`, read the actual strings from the Wasm string arena, and call `adapter.get(table, key)`.
+        *   When the data returns, **hydrate** it by allocating a new graph for the data and replacing the `PID` node with this new subgraph using `wasm.rewrite_port`.
+
+*   **Gotcha:** Dehydrating a graph back to JSON for saving (`adapter.set`) is a complex traversal problem. The Wasm module should provide a `wasm.dehydrate_graph(ptr)` function that walks the graph from a given pointer and returns a serializable representation.
+
+**Task 4.3: The CRDT Sync Engine**
+
+*   **How-To:**
+    1.  **Wasm Serialization/Causality API:**
+        *   **`serialize_delta(ptr)`:** This function is critical. Starting from a given `ptr` (the operation node), it performs a graph traversal (like a breadth-first search) to find all *newly created* nodes in that operation's subgraph. It collects their heap data into a flat `Vec<u32>` and returns it.
+        *   **`get_dependencies(ptr)`:** This function traverses *upwards* from `ptr` in the graph to find the `Labels` of the parent states it depends on. This is its vector clock.
+        *   **`apply_delta(payload)`:** This is the reverse of serialization. It takes a `Vec<u32>` and calls `alloc_node` and `connect_ports` to reconstruct the remote operation on the local heap, wiring it into the shared state to create the merge condition.
+    2.  **JS `SyncEngine` (`src/core/sync.ts`)**:
+        *   Create a class that takes a `replicaId` (a unique `Label`), a `WebSocket`, and the `wasm` instance.
+        *   **`localChange(opPtr)`:** When a local action happens, this is called. It calls `wasm.get_dependencies(opPtr)` and `wasm.serialize_delta(opPtr)`, packages them into a `DeltaMessage`, and sends it over the WebSocket.
+        *   **`receive(message)`:** When a message arrives, this implements **causal delivery**.
+            *   It checks if all `message.dependencies` exist in a local `Set` of `receivedLabels`.
+            *   If yes: `wasm.apply_delta(message.payload)`, add `message.replicaId` to `receivedLabels`, and trigger the main `update()` loop.
+            *   If no: Add the message to a `pendingDeltas` Map, keyed by its own `replicaId`. After any successful delivery, re-check the pending queue.
+    3.  **Semantic Merging (The Final Step for CRDTs):**
+        *   Extend the `Header` format to include a "Semantic Type" alongside the `Tag`. For example, `Bits 0-4: Tag`, `Bits 5-7: Semantic Type`.
+        *   Define constants: `SEMANTIC_NONE`, `SEMANTIC_LWW_REGISTER`, `SEMANTIC_G_COUNTER`.
+        *   **Update the `reduce_redexes` shader:** The `DUP-SUP` logic must be expanded.
+            ```wgsl
+            // Inside the DUP-SUP check...
+            let dup_header = atomicLoad(&heap[dup_ptr]);
+            let sup_header = atomicLoad(&heap[sup_ptr]);
+            let dup_label = ...;
+            let sup_label = ...;
+            let semantic_type = (dup_header >> 5u) & 0x7u;
+            
+            if (dup_label == sup_label) { /* Annihilation */ }
+            else {
+              switch (semantic_type) {
+                case SEMANTIC_LWW_REGISTER: {
+                  // LWW logic: if dup_label > sup_label, rewire to dup's child, else sup's child
+                  break;
+                }
+                case SEMANTIC_G_COUNTER: {
+                  // G-Counter logic: create a new OP_ADD node to sum the two branches
+                  break;
+                }
+                default: { // SEMANTIC_NONE
+                  // Default Commutation logic (preserve both)
+                  break;
+                }
+              }
+            }
+            ```
+
+---
+
+##### **Phase 5: The Developer Experience - The Compiler**
+
+**Objective:** Hide all this low-level complexity behind an elegant, high-level syntax.
+
+*   **How-To:**
+    1.  **Choose a Parser:** Use a robust parser-generator like `tree-sitter` or `babel`'s parser to handle the JSX-like syntax.
+    2.  **AST Generation:** The parser's output is an Abstract Syntax Tree (AST) that represents the component's code.
+    3.  **Static Analysis Pass:**
+        *   Traverse the AST to identify all static elements. For these, generate direct DOM creation code strings (e.g., `const t0 = document.createElement('h1'); t0.textContent = 'Hello';`).
+        *   Identify all dynamic elements and state declarations (`track`, `@variable`).
+    4.  **Affinity Analysis Pass:**
+        *   Traverse the AST again. Build a usage map for every variable declared with `let`.
+        *   If `usage_map[variable] > 1`, you must plan to insert a `DUP` node.
+    5.  **Graph Generation Pass:**
+        *   This is the core compiler backend. It traverses the AST a final time and emits a string of JS code.
+        *   This code will be a `build...Graph(wasm)` function.
+        *   For each AST node, it emits the corresponding `wasm.alloc_node(...)` and `wasm.connect_ports(...)` calls.
+        *   When it encounters a variable used multiple times, it emits the code to create a `DUP` node and wires up the subsequent uses to the `DUP`'s two output variables.
+    6.  **Final Output:** The compiler produces a single `.js` file per component containing the static DOM template, the `build...Graph` function, and the glue code to link them together.
+
+---
+
+##### **Phase 6: The Pre-Flight Checklist (Final Polish & Gotchas)**
+
+**Objective:** Harden the framework for production use.
+
+*   **Action:** Systematically address the "pre-flight checklist" items.
+*   **How-To (Key Examples):**
+    *   **Heap Overflow:** In `wasm.alloc_node`, check `if (FREE_LIST.is_empty())` and throw a specific, trappable exception that the JS Bridge can catch and report gracefully.
+    *   **GPU Fallback:** The `GPU_Engine.init()` function will have a top-level `try/catch`. If *any* part of the GPU setup fails, it will set an internal flag `this.isAvailable = false;` and return. The JS Bridge's `update()` loop will be `if (gpu.isAvailable) { gpu.reduce_pass_gpu() } else { wasm.reduce_pass_cpu() }`.
+    *   **Tombstoning:** To implement deletes, create a Wasm function `wasm.delete_node(ptr)`. This function does *not* call `free_node`. Instead, it reads the header at `ptr`, sets the `FLAG_IS_DELETED` bit, and writes the header back. The rendering logic and sync logic must be taught to ignore nodes with this flag.
+    *   **Initial Sync:** The `SyncEngine` needs a `bootstrap()` method. On first connect, it sends a `REQUEST_SNAPSHOT` message. The server (or a designated peer) responds by calling its own `wasm.serialize_delta` on the *entire root* of the application state, sending this large payload back. The new client applies this snapshot before starting to process incremental deltas.
+
+This detailed, tactical guide provides a clear, step-by-step path from a blank canvas to a fully-featured, high-performance, and philosophically coherent framework.
