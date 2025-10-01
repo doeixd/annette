@@ -5170,3 +5170,58 @@ It is not an afterthought: It is a fundamental property of the core computationa
 Provably Safe: The rules of the calculus guarantee that parallel tasks cannot interfere with each other unless explicitly merged, eliminating entire classes of race conditions.
 Fine-Grained Control: The JS Bridge has millisecond-level control over how much work is done on which task, allowing for sophisticated scheduling strategies (like React's time-slicing and lane model) to be implemented very simply.
 Unified Model: The same primitives (SUP, DUP) are used for reactivity, asynchronicity, concurrency, and scheduling. This creates an incredibly powerful and conceptually clean system.
+
+That's an excellent and very precise question. It helps clarify a crucial architectural distinction.
+
+The short answer is: Our proposed IC framework (in its optimized Tier 2 Wasm form) should be **significantly faster** than a typical UI framework that simply uses `wasm-bindgen` to call Rust code.
+
+They are not the same thing, and the performance difference comes from *how* they use WebAssembly, not just *that* they use it.
+
+### The Critical Distinction: Bridge vs. Engine
+
+1.  **`wasm-bindgen`:** This is a **bridge or glue tool**. Its primary job is to make it easy for JavaScript and Rust/Wasm to talk to each other. It generates the boilerplate code needed to pass complex data types (like strings, objects, and closures) back and forth across the JS-Wasm boundary. Frameworks like **Yew** and **Sycamore** use `wasm-bindgen` extensively.
+
+2.  **Our IC Framework's Wasm Component:** This is a self-contained **computation engine**. Its design goal is to **minimize communication** with JavaScript as much as possible. It operates on a shared block of memory (`SharedArrayBuffer`) and runs its entire reduction loop without ever needing to talk to JS.
+
+### Performance Comparison
+
+Let's analyze how a typical `wasm-bindgen` framework and our IC framework would perform on the JS Framework Benchmark.
+
+#### A Typical `wasm-bindgen` Framework (e.g., Yew)
+
+Yew is a fantastic framework, but its performance model, as measured by the benchmark, looks like this:
+
+1.  **Event:** A user clicks a button. The event is handled in JS and passed to Wasm.
+2.  **State Update:** The component's state is updated inside Wasm (very fast).
+3.  **VDOM Calculation:** A new Virtual DOM is calculated entirely within Wasm (also very fast).
+4.  **VDOM Diffing:** The new VDOM is diffed against the old one, still in Wasm (again, very fast).
+5.  **DOM Patching (The Bottleneck):** The Wasm code now has a list of changes to make to the real DOM. It must call back out to JavaScript for *every single DOM manipulation*.
+    *   `wasm-bindgen` makes this easy, but each call (`document.createElement`, `element.setAttribute`, `parent.appendChild`) has to cross the JS-Wasm boundary. This boundary crossing has a small but significant overhead. For a large update with hundreds of changes, this adds up.
+
+This "chattiness" across the boundary is why `wasm-bindgen`-based frameworks, while fast, typically rank a tier below the absolute fastest pure JS frameworks like SolidJS in the benchmark. The Rust logic is fast, but the communication overhead for DOM patching becomes the limiting factor.
+
+#### Our Optimized Tier 2 IC Framework
+
+Our framework is designed specifically to avoid this "chattiness."
+
+1.  **Event:** A user clicks a button. The event is handled in JS.
+2.  **Trigger Reduction:** The JS bridge makes **one single call** to the Wasm engine: `wasm.handle_click_event(statePtr, handlerPtr)`. This call is extremely cheap.
+3.  **State Calculation:** The Wasm engine runs its entire `reduce_pass_cpu()` loop **entirely within Wasm**, operating on the shared memory. There is **zero communication** with JavaScript during this phase. It continues until the graph is stable.
+4.  **Read Results:** The JS bridge now reads the final, changed values directly from the `SharedArrayBuffer`. This is not a function call; it's a direct memory read, which is incredibly fast.
+5.  **DOM Patching:** The JS bridge, now armed with the final state, performs the minimal DOM manipulations itself, entirely within JavaScript.
+
+### Analogy: The Master Architect and the Factory
+
+*   **`wasm-bindgen` Frameworks:** Imagine a master architect (Wasm) who is brilliant at designing a building. But to build it, they have to stay in their office and call a construction worker (JavaScript) on the phone for every single instruction: "Place a brick at coordinates X,Y." "Now get a window." "Now put the window at Z." The phone calls themselves slow down the process.
+
+*   **Our IC Framework:** Imagine the architect (JS Bridge) gives a high-level blueprint ("Build the next state of the building") to a fully autonomous, robotic factory (the Wasm engine). The factory does all the work internally. When it's finished, the architect simply looks at the final, completed section and puts it in place. The communication is minimal and efficient.
+
+### Conclusion: Benchmark Placement
+
+Based on this analysis:
+
+*   **SolidJS** is the current king because its pure JS compilation strategy is so efficient that it has almost zero overhead.
+*   **`wasm-bindgen` frameworks (Yew, Sycamore)** are very fast but sit slightly below SolidJS, primarily due to the overhead of numerous JS-Wasm boundary crossings required for DOM patching.
+*   **Our Tier 2 IC Framework** is designed to have the computational speed of Wasm *without* the boundary-crossing overhead of other Wasm frameworks.
+
+Therefore, our IC framework would slot in **above the `wasm-bindgen` frameworks** and would be in **direct competition with SolidJS for the #1 spot**. It has a legitimate chance of being faster due to the combination of a provably optimal reduction algorithm and a minimal-overhead, shared-memory architecture.
