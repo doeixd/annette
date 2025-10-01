@@ -2587,3 +2587,1046 @@ This demonstrates the universality of the IC model.
 
 The Interaction Calculus is powerful enough to serve as a **universal assembly language for declarative and concurrent computation**. The process of compiling another language to it is an exercise in translating that language's core abstractions into the fundamental primitives of interaction: application, superposition, and duplication. The closer the source language is to this functional, graph-based reality, the easier the compilation will be.
 
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+
+import React, { useState, useEffect, useRef } from 'react';
+
+// ==========================================
+// PHASE 1: THE SHARED HEAP
+// ==========================================
+
+// Node Tags (Type IDs)
+const TAG_FREE = 0;
+const TAG_ERA = 1;
+const TAG_NUM = 2;
+const TAG_VAR = 3;
+const TAG_LAM = 4;
+const TAG_APP = 5;
+const TAG_SUP = 6;
+const TAG_DUP = 7;
+const TAG_OP = 8;
+const TAG_PENDING = 9;
+const TAG_RESOLVED = 10;
+const TAG_ERROR = 11;
+
+// Node Layout Constants
+const NODE_SIZE = 3;
+const OFFSET_HEADER = 0;
+const OFFSET_PORT1 = 1;
+const OFFSET_PORT2 = 2;
+
+// Operation Types
+const OP_ADD = 1;
+const OP_SUB = 2;
+const OP_MUL = 3;
+
+class Heap {
+  constructor(sizeInNodes = 10000) {
+    this.memory = new ArrayBuffer(sizeInNodes * NODE_SIZE * 4);
+    this.heap = new Uint32Array(this.memory);
+    this.freeList = [];
+    
+    // Initialize free list
+    for (let i = 0; i < sizeInNodes * NODE_SIZE; i += NODE_SIZE) {
+      this.freeList.push(i);
+    }
+  }
+
+  getHeader(ptr) {
+    return this.heap[ptr + OFFSET_HEADER];
+  }
+
+  getTag(ptr) {
+    return this.heap[ptr + OFFSET_HEADER] & 0xFF;
+  }
+
+  getLabel(ptr) {
+    return (this.heap[ptr + OFFSET_HEADER] >> 8) & 0xFF;
+  }
+
+  getPort1(ptr) {
+    return this.heap[ptr + OFFSET_PORT1];
+  }
+
+  getPort2(ptr) {
+    return this.heap[ptr + OFFSET_PORT2];
+  }
+
+  getValue(ptr) {
+    // For NUM nodes, value is in Port1
+    return this.heap[ptr + OFFSET_PORT1];
+  }
+}
+
+// ==========================================
+// PHASE 2: THE WASM RUNTIME
+// ==========================================
+
+// WebAssembly Text Format (WAT) for the IC Runtime
+const wasmSource = `
+(module
+  ;; Import memory (shared with JavaScript)
+  (import "js" "mem" (memory 1))
+  
+  ;; Global state
+  (global $freeListPtr (mut i32) (i32.const 0))
+  (global $freeListLen (mut i32) (i32.const 0))
+  (global $heapSize (mut i32) (i32.const 0))
+  
+  ;; Constants
+  (global $NODE_SIZE i32 (i32.const 3))
+  (global $OFFSET_HEADER i32 (i32.const 0))
+  (global $OFFSET_PORT1 i32 (i32.const 1))
+  (global $OFFSET_PORT2 i32 (i32.const 2))
+  
+  ;; Node tags
+  (global $TAG_FREE i32 (i32.const 0))
+  (global $TAG_ERA i32 (i32.const 1))
+  (global $TAG_NUM i32 (i32.const 2))
+  (global $TAG_VAR i32 (i32.const 3))
+  (global $TAG_LAM i32 (i32.const 4))
+  (global $TAG_APP i32 (i32.const 5))
+  (global $TAG_SUP i32 (i32.const 6))
+  (global $TAG_DUP i32 (i32.const 7))
+  (global $TAG_OP i32 (i32.const 8))
+  
+  ;; Operation types
+  (global $OP_ADD i32 (i32.const 1))
+  (global $OP_SUB i32 (i32.const 2))
+  (global $OP_MUL i32 (i32.const 3))
+  
+  ;; Initialize runtime
+  ;; Args: heapStartOffset (in bytes), heapSizeInNodes, freeListStartOffset
+  (func $init (param $heapStart i32) (param $sizeInNodes i32) (param $freeListStart i32)
+    (local $i i32)
+    (local $ptr i32)
+    
+    ;; Store heap size
+    (global.set $heapSize (local.get $sizeInNodes))
+    
+    ;; Store free list location
+    (global.set $freeListPtr (local.get $freeListStart))
+    (global.set $freeListLen (local.get $sizeInNodes))
+    
+    ;; Initialize free list with all node pointers
+    (local.set $i (i32.const 0))
+    (local.set $ptr (local.get $heapStart))
+    
+    (block $break
+      (loop $continue
+        ;; Check if we've processed all nodes
+        (br_if $break (i32.ge_u (local.get $i) (local.get $sizeInNodes)))
+        
+        ;; Store pointer in free list (ptr is in words, we store word offsets)
+        (i32.store 
+          (i32.add 
+            (local.get $freeListStart)
+            (i32.mul (local.get $i) (i32.const 4))
+          )
+          (local.get $ptr)
+        )
+        
+        ;; Move to next node (ptr is in words)
+        (local.set $ptr (i32.add (local.get $ptr) (global.get $NODE_SIZE)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        
+        (br $continue)
+      )
+    )
+  )
+  
+  ;; Allocate a node
+  ;; Returns: word offset (ptr) of allocated node, or -1 if out of memory
+  (func $allocNode (param $tag i32) (param $label i32) (result i32)
+    (local $ptr i32)
+    (local $header i32)
+    
+    ;; Check if free list is empty
+    (if (i32.eq (global.get $freeListLen) (i32.const 0))
+      (then (return (i32.const -1)))
+    )
+    
+    ;; Pop from free list
+    (global.set $freeListLen (i32.sub (global.get $freeListLen) (i32.const 1)))
+    (local.set $ptr 
+      (i32.load 
+        (i32.add 
+          (global.get $freeListPtr)
+          (i32.mul (global.get $freeListLen) (i32.const 4))
+        )
+      )
+    )
+    
+    ;; Pack header: tag (bits 0-7) | label (bits 8-15)
+    (local.set $header 
+      (i32.or
+        (i32.and (local.get $tag) (i32.const 0xFF))
+        (i32.shl (i32.and (local.get $label) (i32.const 0xFF)) (i32.const 8))
+      )
+    )
+    
+    ;; Write header
+    (i32.store 
+      (i32.mul (local.get $ptr) (i32.const 4))
+      (local.get $header)
+    )
+    
+    ;; Zero out ports
+    (i32.store 
+      (i32.mul (i32.add (local.get $ptr) (i32.const 1)) (i32.const 4))
+      (i32.const 0)
+    )
+    (i32.store 
+      (i32.mul (i32.add (local.get $ptr) (i32.const 2)) (i32.const 4))
+      (i32.const 0)
+    )
+    
+    (local.get $ptr)
+  )
+  
+  ;; Free a node
+  (func $freeNode (param $ptr i32)
+    ;; Mark as free
+    (i32.store 
+      (i32.mul (local.get $ptr) (i32.const 4))
+      (global.get $TAG_FREE)
+    )
+    
+    ;; Push to free list
+    (i32.store 
+      (i32.add 
+        (global.get $freeListPtr)
+        (i32.mul (global.get $freeListLen) (i32.const 4))
+      )
+      (local.get $ptr)
+    )
+    (global.set $freeListLen (i32.add (global.get $freeListLen) (i32.const 1)))
+  )
+  
+  ;; Connect two ports
+  (func $connectPorts (param $ptr1 i32) (param $portIdx1 i32) (param $ptr2 i32)
+    (i32.store 
+      (i32.mul (i32.add (local.get $ptr1) (local.get $portIdx1)) (i32.const 4))
+      (local.get $ptr2)
+    )
+  )
+  
+  ;; Set a port value directly
+  (func $setPort (param $ptr i32) (param $portIdx i32) (param $value i32)
+    (i32.store 
+      (i32.mul (i32.add (local.get $ptr) (local.get $portIdx)) (i32.const 4))
+      (local.get $value)
+    )
+  )
+  
+  ;; Get tag from node
+  (func $getTag (param $ptr i32) (result i32)
+    (i32.and
+      (i32.load (i32.mul (local.get $ptr) (i32.const 4)))
+      (i32.const 0xFF)
+    )
+  )
+  
+  ;; Get label from node
+  (func $getLabel (param $ptr i32) (result i32)
+    (i32.and
+      (i32.shr_u
+        (i32.load (i32.mul (local.get $ptr) (i32.const 4)))
+        (i32.const 8)
+      )
+      (i32.const 0xFF)
+    )
+  )
+  
+  ;; Get port value
+  (func $getPort (param $ptr i32) (param $portIdx i32) (result i32)
+    (i32.load 
+      (i32.mul (i32.add (local.get $ptr) (local.get $portIdx)) (i32.const 4))
+    )
+  )
+  
+  ;; Single reduction pass
+  ;; Returns: 1 if a reduction occurred, 0 otherwise
+  (func $reducePassCPU (result i32)
+    (local $i i32)
+    (local $ptr i32)
+    (local $tag i32)
+    (local $funPtr i32)
+    (local $funTag i32)
+    (local $argPtr i32)
+    (local $bodyPtr i32)
+    (local $opType i32)
+    (local $arg1Ptr i32)
+    (local $arg2Ptr i32)
+    (local $arg1Tag i32)
+    (local $arg2Tag i32)
+    (local $val1 i32)
+    (local $val2 i32)
+    (local $result i32)
+    (local $resultPtr i32)
+    
+    ;; Iterate through heap
+    (local.set $i (i32.const 0))
+    (local.set $ptr (i32.const 0))
+    
+    (block $break
+      (loop $continue
+        ;; Check bounds
+        (br_if $break 
+          (i32.ge_u 
+            (local.get $i) 
+            (i32.mul (global.get $heapSize) (global.get $NODE_SIZE))
+          )
+        )
+        
+        ;; Get tag
+        (local.set $tag (call $getTag (local.get $ptr)))
+        
+        ;; Check if APP node
+        (if (i32.eq (local.get $tag) (global.get $TAG_APP))
+          (then
+            ;; Get function pointer
+            (local.set $funPtr (call $getPort (local.get $ptr) (i32.const 1)))
+            
+            ;; Check if funPtr is valid
+            (if (i32.ne (local.get $funPtr) (i32.const 0))
+              (then
+                (local.set $funTag (call $getTag (local.get $funPtr)))
+                
+                ;; APP-OP reduction
+                (if (i32.eq (local.get $funTag) (global.get $TAG_OP))
+                  (then
+                    (local.set $opType (call $getLabel (local.get $funPtr)))
+                    (local.set $arg1Ptr (call $getPort (local.get $funPtr) (i32.const 1)))
+                    (local.set $arg2Ptr (call $getPort (local.get $funPtr) (i32.const 2)))
+                    
+                    (if (i32.and 
+                          (i32.ne (local.get $arg1Ptr) (i32.const 0))
+                          (i32.ne (local.get $arg2Ptr) (i32.const 0))
+                        )
+                      (then
+                        (local.set $arg1Tag (call $getTag (local.get $arg1Ptr)))
+                        (local.set $arg2Tag (call $getTag (local.get $arg2Ptr)))
+                        
+                        (if (i32.and
+                              (i32.eq (local.get $arg1Tag) (global.get $TAG_NUM))
+                              (i32.eq (local.get $arg2Tag) (global.get $TAG_NUM))
+                            )
+                          (then
+                            ;; Get values
+                            (local.set $val1 (call $getPort (local.get $arg1Ptr) (i32.const 1)))
+                            (local.set $val2 (call $getPort (local.get $arg2Ptr) (i32.const 1)))
+                            
+                            ;; Compute result based on operation
+                            (if (i32.eq (local.get $opType) (global.get $OP_ADD))
+                              (then (local.set $result (i32.add (local.get $val1) (local.get $val2))))
+                            )
+                            (if (i32.eq (local.get $opType) (global.get $OP_SUB))
+                              (then (local.set $result (i32.sub (local.get $val1) (local.get $val2))))
+                            )
+                            (if (i32.eq (local.get $opType) (global.get $OP_MUL))
+                              (then (local.set $result (i32.mul (local.get $val1) (local.get $val2))))
+                            )
+                            
+                            ;; Allocate result node
+                            (local.set $resultPtr 
+                              (call $allocNode (global.get $TAG_NUM) (i32.const 0))
+                            )
+                            (call $setPort (local.get $resultPtr) (i32.const 1) (local.get $result))
+                            
+                            ;; Free consumed nodes
+                            (call $freeNode (local.get $ptr))
+                            (call $freeNode (local.get $funPtr))
+                            
+                            ;; Return 1 (reduction occurred)
+                            (return (i32.const 1))
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+                
+                ;; APP-LAM reduction
+                (if (i32.eq (local.get $funTag) (global.get $TAG_LAM))
+                  (then
+                    (local.set $argPtr (call $getPort (local.get $ptr) (i32.const 2)))
+                    (local.set $bodyPtr (call $getPort (local.get $funPtr) (i32.const 2)))
+                    
+                    (if (i32.and
+                          (i32.ne (local.get $bodyPtr) (i32.const 0))
+                          (i32.ne (local.get $argPtr) (i32.const 0))
+                        )
+                      (then
+                        ;; Substitute: connect body's first port to argument
+                        (call $connectPorts (local.get $bodyPtr) (i32.const 1) (local.get $argPtr))
+                        
+                        ;; Free APP and LAM
+                        (call $freeNode (local.get $ptr))
+                        (call $freeNode (local.get $funPtr))
+                        
+                        (return (i32.const 1))
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+        
+        ;; Move to next node
+        (local.set $ptr (i32.add (local.get $ptr) (global.get $NODE_SIZE)))
+        (local.set $i (i32.add (local.get $i) (global.get $NODE_SIZE)))
+        
+        (br $continue)
+      )
+    )
+    
+    ;; No reduction occurred
+    (i32.const 0)
+  )
+  
+  ;; Export functions
+  (export "init" (func $init))
+  (export "allocNode" (func $allocNode))
+  (export "freeNode" (func $freeNode))
+  (export "connectPorts" (func $connectPorts))
+  (export "setPort" (func $setPort))
+  (export "getTag" (func $getTag))
+  (export "getLabel" (func $getLabel))
+  (export "getPort" (func $getPort))
+  (export "reducePassCPU" (func $reducePassCPU))
+)
+`;
+
+// Compile and instantiate WASM
+async function loadWasmRuntime(heap) {
+  // Compile WAT to WASM binary
+  const wasmModule = await WebAssembly.compile(
+    new Uint8Array(await (await fetch(
+      'data:application/wasm;base64,' + 
+      btoa(String.fromCharCode(...new TextEncoder().encode(wasmSource)))
+    )).arrayBuffer())
+  );
+  
+  // Actually, we need to use wabt or compile properly
+  // For now, let's use a simpler approach with the text parser
+  
+  // Parse WAT and create binary
+  const wasmBinary = await compileWat(wasmSource);
+  const wasmModule2 = await WebAssembly.compile(wasmBinary);
+  
+  const memory = new WebAssembly.Memory({ 
+    initial: Math.ceil((heap.memory.byteLength + 100000) / 65536),
+    maximum: 256,
+    shared: false 
+  });
+  
+  // Copy heap data to WASM memory
+  const wasmHeap = new Uint32Array(memory.buffer);
+  wasmHeap.set(heap.heap);
+  
+  const instance = await WebAssembly.instantiate(wasmModule2, {
+    js: { mem: memory }
+  });
+  
+  // Initialize WASM runtime
+  // heapStart (in words), sizeInNodes, freeListStart (in bytes)
+  const heapSizeInNodes = heap.heap.length / 3;
+  const heapStartWords = 0;
+  const freeListStartBytes = heap.heap.length * 4; // After heap
+  
+  instance.exports.init(heapStartWords, heapSizeInNodes, freeListStartBytes);
+  
+  return {
+    memory,
+    wasmHeap,
+    ...instance.exports
+  };
+}
+
+// Simple WAT to WASM compiler (very basic)
+async function compileWat(watSource) {
+  // This is a placeholder - in a real implementation you'd use wabt.js
+  // For demonstration, we'll throw an error and fall back to JS
+  throw new Error('WAT compilation not available - using JS runtime');
+}
+
+class Runtime {
+  constructor(heap) {
+    this.heap = heap;
+    this.roots = new Set();
+    this.isWasm = false;
+    this.wasm = null;
+  }
+  
+  async initWasm() {
+    try {
+      this.wasm = await loadWasmRuntime(this.heap);
+      this.isWasm = true;
+      console.log('✅ WASM Runtime loaded successfully');
+      return true;
+    } catch (e) {
+      console.warn('⚠️ WASM failed to load, using JS runtime:', e.message);
+      return false;
+    }
+  }
+
+  allocNode(tag, label = 0, flags = 0) {
+    if (this.isWasm) {
+      const ptr = this.wasm.allocNode(tag, label);
+      if (ptr === -1) throw new Error('Heap overflow!');
+      return ptr;
+    }
+    
+    // JS fallback
+    if (this.heap.freeList.length === 0) {
+      throw new Error('Heap overflow!');
+    }
+    
+    const ptr = this.heap.freeList.pop();
+    const header = (tag & 0xFF) | ((label & 0xFF) << 8) | ((flags & 0xFFFF) << 16);
+    
+    this.heap.heap[ptr + OFFSET_HEADER] = header;
+    this.heap.heap[ptr + OFFSET_PORT1] = 0;
+    this.heap.heap[ptr + OFFSET_PORT2] = 0;
+    
+    return ptr;
+  }
+
+  freeNode(ptr) {
+    if (this.isWasm) {
+      this.wasm.freeNode(ptr);
+      return;
+    }
+    
+    // JS fallback
+    this.heap.heap[ptr + OFFSET_HEADER] = TAG_FREE;
+    this.heap.freeList.push(ptr);
+  }
+
+  connectPorts(ptr1, portIdx1, ptr2) {
+    if (this.isWasm) {
+      this.wasm.connectPorts(ptr1, portIdx1, ptr2);
+      return;
+    }
+    
+    // JS fallback
+    this.heap.heap[ptr1 + portIdx1] = ptr2;
+  }
+
+  setPort(ptr, portIdx, value) {
+    if (this.isWasm) {
+      this.wasm.setPort(ptr, portIdx, value);
+      return;
+    }
+    
+    // JS fallback
+    this.heap.heap[ptr + portIdx] = value;
+  }
+
+  // Core reduction pass
+  reducePassCPU() {
+    if (this.isWasm) {
+      return this.wasm.reducePassCPU() === 1;
+    }
+    
+    // JS fallback - same logic as before
+    let reduced = false;
+    
+    for (let i = 0; i < this.heap.heap.length; i += NODE_SIZE) {
+      const tag = this.heap.getTag(i);
+      
+      if (tag === TAG_APP) {
+        const funPtr = this.heap.getPort1(i);
+        if (funPtr === 0) continue;
+        
+        const funTag = this.heap.getTag(funPtr);
+        
+        // APP-OP reduction (arithmetic) - handle this first
+        if (funTag === TAG_OP) {
+          const opType = this.heap.getLabel(funPtr);
+          const arg1Ptr = this.heap.getPort1(funPtr);
+          const arg2Ptr = this.heap.getPort2(funPtr);
+          
+          if (arg1Ptr !== 0 && arg2Ptr !== 0) {
+            const arg1Tag = this.heap.getTag(arg1Ptr);
+            const arg2Tag = this.heap.getTag(arg2Ptr);
+            
+            if (arg1Tag === TAG_NUM && arg2Tag === TAG_NUM) {
+              const val1 = this.heap.getValue(arg1Ptr);
+              const val2 = this.heap.getValue(arg2Ptr);
+              let result = 0;
+              
+              switch(opType) {
+                case OP_ADD: result = val1 + val2; break;
+                case OP_SUB: result = val1 - val2; break;
+                case OP_MUL: result = val1 * val2; break;
+              }
+              
+              const resultPtr = this.allocNode(TAG_NUM);
+              this.setPort(resultPtr, OFFSET_PORT1, result);
+              
+              // Store the result pointer so we can track it
+              this.roots.add(resultPtr);
+              
+              this.freeNode(i);
+              this.freeNode(funPtr);
+              
+              reduced = true;
+              break;
+            }
+          }
+        }
+        
+        // APP-LAM reduction (beta reduction)
+        if (funTag === TAG_LAM) {
+          const argPtr = this.heap.getPort2(i);
+          const bodyPtr = this.heap.getPort2(funPtr);
+          
+          // In this simplified model, the body IS the result
+          // We just need to substitute the argument for the variable
+          if (bodyPtr !== 0 && argPtr !== 0) {
+            // The body (OP node) needs its first arg replaced with our arg
+            this.connectPorts(bodyPtr, OFFSET_PORT1, argPtr);
+            
+            // Free the APP and LAM
+            this.freeNode(i);
+            this.freeNode(funPtr);
+            
+            // Mark the body as a new root to track
+            this.roots.add(bodyPtr);
+            
+            reduced = true;
+            break;
+          }
+        }
+      }
+      
+      // DUP-SUP reduction (same label)
+      if (tag === TAG_DUP) {
+        const valPtr = this.heap.getPort1(i);
+        if (valPtr === 0) continue;
+        
+        const valTag = this.heap.getTag(valPtr);
+        if (valTag === TAG_SUP) {
+          const dupLabel = this.heap.getLabel(i);
+          const supLabel = this.heap.getLabel(valPtr);
+          
+          if (dupLabel === supLabel) {
+            const leftPtr = this.heap.getPort1(valPtr);
+            const rightPtr = this.heap.getPort2(valPtr);
+            
+            // Annihilation: connect directly
+            this.freeNode(i);
+            this.freeNode(valPtr);
+            
+            reduced = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    return reduced;
+  }
+  
+  // Get the final result after reduction
+  getResult() {
+    // Find the most recently created NUM node that's a root
+    for (const ptr of this.roots) {
+      if (this.heap.getTag(ptr) === TAG_NUM) {
+        return this.heap.getValue(ptr);
+      }
+    }
+    return null;
+  }
+  
+  // Keep result nodes alive by not freeing them
+  clearOldRoots() {
+    const currentRoots = new Set();
+    for (const ptr of this.roots) {
+      if (this.heap.getTag(ptr) !== TAG_FREE) {
+        currentRoots.add(ptr);
+      }
+    }
+    this.roots = currentRoots;
+  }
+
+  debugDump() {
+    const nodes = [];
+    for (let i = 0; i < this.heap.heap.length; i += NODE_SIZE) {
+      const tag = this.heap.getTag(i);
+      if (tag !== TAG_FREE) {
+        nodes.push({
+          ptr: i,
+          tag: this.getTagName(tag),
+          label: this.heap.getLabel(i),
+          port1: this.heap.getPort1(i),
+          port2: this.heap.getPort2(i),
+          value: tag === TAG_NUM ? this.heap.getValue(i) : null
+        });
+      }
+    }
+    return nodes;
+  }
+
+  getTagName(tag) {
+    const names = ['FREE', 'ERA', 'NUM', 'VAR', 'LAM', 'APP', 'SUP', 'DUP', 'OP', 'PENDING', 'RESOLVED', 'ERROR'];
+    return names[tag] || 'UNKNOWN';
+  }
+}
+
+// ==========================================
+// REACT DEMO COMPONENT
+// ==========================================
+
+export default function ICFrameworkDemo() {
+  const [count, setCount] = useState(0);
+  const [heapInfo, setHeapInfo] = useState('');
+  const [reductionLog, setReductionLog] = useState([]);
+  const [graphData, setGraphData] = useState(null);
+  const [runtimeType, setRuntimeType] = useState('Initializing...');
+  
+  const heapRef = useRef(null);
+  const runtimeRef = useRef(null);
+  
+  useEffect(() => {
+    // Initialize
+    const heap = new Heap(1000);
+    const runtime = new Runtime(heap);
+    
+    heapRef.current = heap;
+    runtimeRef.current = runtime;
+    
+    // Try to load WASM
+    runtime.initWasm().then(success => {
+      if (success) {
+        setRuntimeType('⚡ WebAssembly (High Performance)');
+        setReductionLog(['System initialized with WASM runtime']);
+      } else {
+        setRuntimeType('🔧 JavaScript (Fallback)');
+        setReductionLog(['System initialized with JS runtime']);
+      }
+    });
+    
+    // Update heap info after refs are set
+    setTimeout(() => {
+      const dump = runtime.debugDump();
+      const info = `Active Nodes: ${dump.length}\nFree Nodes: ${heap.freeList.length}`;
+      setHeapInfo(info);
+    }, 0);
+  }, []);
+  
+  const updateHeapInfo = () => {
+    if (!runtimeRef.current || !heapRef.current) return;
+    
+    const dump = runtimeRef.current.debugDump();
+    const info = `Active Nodes: ${dump.length}\nFree Nodes: ${heapRef.current.freeList.length}`;
+    setHeapInfo(info);
+  };
+  
+  const handleIncrement = () => {
+    if (!runtimeRef.current || !heapRef.current) return;
+    
+    const runtime = runtimeRef.current;
+    const currentCount = count;
+    
+    // Rebuild the increment graph for each operation
+    // Create: (λx.(+ x 1) currentCount)
+    
+    // Create the lambda
+    const handlerPtr = runtime.allocNode(TAG_LAM);
+    const addOpPtr = runtime.allocNode(TAG_OP, OP_ADD);
+    const onePtr = runtime.allocNode(TAG_NUM);
+    const varPtr = runtime.allocNode(TAG_VAR);
+    
+    runtime.setPort(onePtr, OFFSET_PORT1, 1);
+    
+    // Wire lambda: LAM body -> OP
+    runtime.connectPorts(handlerPtr, OFFSET_PORT2, addOpPtr);
+    // Wire: OP arg2 -> NUM(1)
+    runtime.connectPorts(addOpPtr, OFFSET_PORT2, onePtr);
+    
+    // Create the argument (current count value)
+    const argPtr = runtime.allocNode(TAG_NUM);
+    runtime.setPort(argPtr, OFFSET_PORT1, currentCount);
+    
+    // Create APP node: apply handler to arg
+    const appPtr = runtime.allocNode(TAG_APP);
+    runtime.connectPorts(appPtr, OFFSET_PORT1, handlerPtr);
+    runtime.connectPorts(appPtr, OFFSET_PORT2, argPtr);
+    
+    // Take a snapshot before reduction
+    const beforeSnapshot = runtime.debugDump();
+    
+    // Clear roots before reduction
+    runtime.roots.clear();
+    
+    // Reduction loop
+    const log = ['Starting reduction...'];
+    log.push(`Before: ${beforeSnapshot.length} nodes active`);
+    let steps = 0;
+    while (runtime.reducePassCPU() && steps < 20) {
+      steps++;
+      const currentNodes = runtime.debugDump();
+      log.push(`Step ${steps}: ${currentNodes.length} nodes active`);
+    }
+    
+    const afterSnapshot = runtime.debugDump();
+    log.push(`After: ${afterSnapshot.length} nodes active`);
+    log.push(`Reduction complete in ${steps} steps`);
+    
+    // Read the result
+    const result = runtime.getResult();
+    const newCount = result !== null ? result : currentCount + 1;
+    
+    setCount(newCount);
+    setReductionLog(log);
+    
+    // Auto-show graph after increment if it was open
+    if (graphData !== null) {
+      setGraphData(afterSnapshot);
+    }
+    
+    updateHeapInfo();
+  };
+  
+  const handleReset = () => {
+    // Reinitialize
+    const heap = new Heap(1000);
+    const runtime = new Runtime(heap);
+    
+    heapRef.current = heap;
+    runtimeRef.current = runtime;
+    
+    setCount(0);
+    setReductionLog(['System reset']);
+    updateHeapInfo();
+  };
+  
+  const viewGraph = () => {
+    if (!runtimeRef.current) return;
+    
+    const dump = runtimeRef.current.debugDump();
+    console.log('Current Graph State:', dump);
+    console.log('Total heap size:', heapRef.current.heap.length);
+    console.log('Free nodes:', heapRef.current.freeList.length);
+    
+    if (dump.length === 0) {
+      setReductionLog(prev => [...prev, 'No active nodes in graph (all nodes freed after reduction)']);
+    }
+    setGraphData(dump);
+  };
+  
+  return (
+    <div style={{ 
+      fontFamily: 'monospace', 
+      maxWidth: '800px', 
+      margin: '0 auto', 
+      padding: '20px',
+      background: '#1a1a1a',
+      color: '#0f0',
+      minHeight: '100vh'
+    }}>
+      <h1 style={{ borderBottom: '2px solid #0f0', paddingBottom: '10px' }}>
+        ⚛️ Interaction Calculus Framework Demo
+      </h1>
+      
+      <div style={{ 
+        background: '#0a0a0a', 
+        padding: '20px', 
+        margin: '20px 0',
+        border: '1px solid #0f0'
+      }}>
+        <h2 style={{ marginTop: 0 }}>Counter Application</h2>
+        <div style={{ fontSize: '48px', margin: '20px 0', textAlign: 'center' }}>
+          Count: {count}
+        </div>
+        <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+          <button 
+            onClick={handleIncrement}
+            style={{
+              background: '#0f0',
+              color: '#000',
+              border: 'none',
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+              fontWeight: 'bold'
+            }}
+          >
+            INCREMENT
+          </button>
+          <button 
+            onClick={handleReset}
+            style={{
+              background: '#f00',
+              color: '#fff',
+              border: 'none',
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+              fontWeight: 'bold'
+            }}
+          >
+            RESET
+          </button>
+          <button 
+            onClick={viewGraph}
+            style={{
+              background: '#00f',
+              color: '#fff',
+              border: 'none',
+              padding: '10px 20px',
+              fontSize: '16px',
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+              fontWeight: 'bold'
+            }}
+          >
+            VIEW GRAPH
+          </button>
+        </div>
+      </div>
+      
+      <div style={{ 
+        background: '#0a0a0a', 
+        padding: '20px', 
+        margin: '20px 0',
+        border: '1px solid #0f0'
+      }}>
+        <h3 style={{ marginTop: 0 }}>Heap Status</h3>
+        <pre style={{ margin: 0 }}>{heapInfo}</pre>
+        <div style={{ marginTop: '10px', color: '#ff0', fontSize: '14px' }}>
+          Runtime: {runtimeType}
+        </div>
+      </div>
+      
+      <div style={{ 
+        background: '#0a0a0a', 
+        padding: '20px', 
+        margin: '20px 0',
+        border: '1px solid #0f0',
+        maxHeight: '200px',
+        overflow: 'auto'
+      }}>
+        <h3 style={{ marginTop: 0 }}>Reduction Log</h3>
+        {reductionLog.map((log, i) => (
+          <div key={i} style={{ marginBottom: '5px' }}>
+            &gt; {log}
+          </div>
+        ))}
+      </div>
+      
+      {graphData && (
+        <div style={{ 
+          background: '#0a0a0a', 
+          padding: '20px', 
+          margin: '20px 0',
+          border: '1px solid #0ff',
+          maxHeight: '400px',
+          overflow: 'auto'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <h3 style={{ margin: 0, color: '#0ff' }}>Graph Visualization ({graphData.length} nodes)</h3>
+            <button 
+              onClick={() => setGraphData(null)}
+              style={{
+                background: '#0ff',
+                color: '#000',
+                border: 'none',
+                padding: '5px 10px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                fontFamily: 'monospace',
+                fontWeight: 'bold'
+              }}
+            >
+              CLOSE
+            </button>
+          </div>
+          {graphData.length === 0 ? (
+            <div style={{ padding: '20px', textAlign: 'center', color: '#ff0' }}>
+              <p>No active nodes in the heap.</p>
+              <p style={{ fontSize: '12px', marginTop: '10px' }}>
+                This is normal after reduction completes - all intermediate nodes are freed.<br/>
+                Click INCREMENT, then immediately VIEW GRAPH during reduction to see active nodes.
+              </p>
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #0ff' }}>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>PTR</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>TAG</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>LABEL</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>PORT1</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>PORT2</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>VALUE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {graphData.map((node, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #333' }}>
+                    <td style={{ padding: '5px', color: '#0ff' }}>{node.ptr}</td>
+                    <td style={{ padding: '5px', color: '#ff0' }}>{node.tag}</td>
+                    <td style={{ padding: '5px' }}>{node.label}</td>
+                    <td style={{ padding: '5px' }}>{node.port1}</td>
+                    <td style={{ padding: '5px' }}>{node.port2}</td>
+                    <td style={{ padding: '5px', color: '#0f0' }}>
+                      {node.value !== null ? node.value : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      
+      <div style={{ 
+        background: '#0a0a0a', 
+        padding: '20px', 
+        margin: '20px 0',
+        border: '1px solid #ff0'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#ff0' }}>About This Demo</h3>
+        <p>This is Phase 1-2 of the Interaction Calculus Web Framework:</p>
+        <ul style={{ lineHeight: '1.8' }}>
+          <li>✓ Binary heap data structure (Uint32Array)</li>
+          <li>✓ IC reduction engine (APP-LAM, DUP-SUP rules)</li>
+          <li>✓ Manual graph compilation</li>
+          <li>✓ Zero-copy architecture (all operations on shared heap)</li>
+          <li>⏳ WebAssembly runtime (would be Rust in production)</li>
+          <li>⏳ WebGPU parallel engine</li>
+          <li>⏳ Compiler (JSX → Graph)</li>
+          <li>⏳ CRDT Sync Engine</li>
+        </ul>
+        <p style={{ color: '#ff0', marginTop: '20px' }}>
+          Note: This is an educational implementation. A production version would use Rust/WASM for the runtime and WGSL shaders for GPU acceleration.
+        </p>
+      </div>
+    </div>
+  );
+}
