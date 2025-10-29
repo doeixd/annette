@@ -1,0 +1,148 @@
+name: Publish Package and Create Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # This is important for getting all tags
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Find built files
+        id: find_files
+        run: |
+          # Find CJS file with robust pattern matching
+          CJS_FILE=""
+          if [ -d "dist" ]; then
+            # Try to find CJS files with various patterns
+            CJS_FILE=$(find dist \( -name "*.cjs.js" -o -name "index.cjs.js" -o -path "*/cjs/*" -name "index.js" \) 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$CJS_FILE" ]; then
+              CJS_FILE=$(find dist -name "index.js" -exec grep -l "CommonJS\|require(" {} \; 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
+
+          # Find ESM file with robust pattern matching
+          ESM_FILE=""
+          if [ -d "dist" ]; then
+            # Try to find ESM files with various patterns
+            ESM_FILE=$(find dist \( -name "*.esm.js" -o -name "index.esm.js" -o -path "*/esm/*" -name "index.js" \) 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$ESM_FILE" ]; then
+              ESM_FILE=$(find dist -name "index.js" -exec grep -l "export\|import.*from" {} \; 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
+
+          # Find TypeScript declaration file
+          TYPES_FILE=""
+          if [ -d "dist" ]; then
+            TYPES_FILE=$(find dist -name "index.d.ts" 2>/dev/null | head -n 1 || echo "")
+            if [ -z "$TYPES_FILE" ]; then
+              TYPES_FILE=$(find dist -name "*.d.ts" 2>/dev/null | head -n 1 || echo "")
+            fi
+          fi
+
+          # Ensure we have deterministic output (empty string if not found)
+          CJS_FILE="${CJS_FILE:-}"
+          ESM_FILE="${ESM_FILE:-}"
+          TYPES_FILE="${TYPES_FILE:-}"
+
+          echo "CJS file: '$CJS_FILE'"
+          echo "ESM file: '$ESM_FILE'"
+          echo "Types file: '$TYPES_FILE'"
+
+          # Always write to GITHUB_OUTPUT, even if empty
+          {
+            echo "cjs_file=$CJS_FILE"
+            echo "esm_file=$ESM_FILE"
+            echo "types_file=$TYPES_FILE"
+          } >> $GITHUB_OUTPUT
+
+      - name: Check package version and publish
+        run: |
+          set -euo pipefail
+          # Extract package name and version from package.json
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Package: $PACKAGE_NAME"
+          echo "Version: $PACKAGE_VERSION"
+
+          # Check if version already exists in registry
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --silent >/dev/null 2>&1; then
+            echo "Version $PACKAGE_VERSION already exists in registry. Skipping publish."
+            echo "version_exists=true" >> $GITHUB_OUTPUT
+            echo "published=false" >> $GITHUB_OUTPUT
+          else
+            echo "Version $PACKAGE_VERSION does not exist. Publishing..."
+            echo "version_exists=false" >> $GITHUB_OUTPUT
+
+            # Publish with provenance and conditional access for scoped packages
+            ACCESS_FLAG=""
+            if [[ "$PACKAGE_NAME" == @*/* ]]; then ACCESS_FLAG="--access public"; fi
+            npm publish --provenance $ACCESS_FLAG
+            echo "published=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Get Changelog Entry
+        id: get_changelog
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          PLAIN_VERSION=${VERSION#v}
+          # Try [vX.Y.Z]
+          CHANGELOG_ENTRY=$(awk "/^## \[$VERSION\]/ {flag=1;next} /^## \[/ {flag=0} flag" CHANGELOG.md)
+          # Fallback: [X.Y.Z]
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY=$(awk "/^## \[$PLAIN_VERSION\]/ {flag=1;next} /^## \[/ {flag=0} flag" CHANGELOG.md)
+          fi
+          # Fallback: '## X.Y.Z' (no brackets)
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY=$(awk "/^## ${PLAIN_VERSION}\$/ {flag=1;next} /^## / {flag=0} flag" CHANGELOG.md)
+          fi
+          # Last resort
+          if [ -z "$CHANGELOG_ENTRY" ]; then
+            CHANGELOG_ENTRY="Automated release for ${VERSION}. See commit history."
+          fi
+          CHANGELOG_ENTRY="${CHANGELOG_ENTRY//'%'/'%25'}"
+          CHANGELOG_ENTRY="${CHANGELOG_ENTRY//$'\n'/'%0A'}"
+          CHANGELOG_ENTRY="${CHANGELOG_ENTRY//$'\r'/'%0D'}"
+          echo "changelog=$CHANGELOG_ENTRY" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.get_changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: |
+            ${{ steps.find_files.outputs.cjs_file }}
+            ${{ steps.find_files.outputs.esm_file }}
+            ${{ steps.find_files.outputs.types_file }}

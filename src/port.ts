@@ -1,8 +1,23 @@
 import { AgentId, IAgent } from "./agent";
+
+
+
 import { IConnection } from "./connection";
 import { Action } from "./rule";
 
 export type PortTypes = "main" | "aux" | "wait" | "hold" | "sync" | "remote";
+
+export interface IRule<
+  Name extends string = string,
+  S extends IAgent = IAgent,
+  D extends IAgent = IAgent,
+  SP extends S["ports"][keyof S["ports"]] = S["ports"][keyof S["ports"]],
+  DP extends D["ports"][keyof D["ports"]] = D["ports"][keyof D["ports"]],
+> {
+  name: Name;
+  connection: IConnection<string, S, D, SP, DP>;
+  action: Action<S, D>;
+}
 export type PortName = string;
 export type PortInstanceKey = `${AgentId}#${PortName}`;
 
@@ -539,14 +554,3 @@ export function addMainPortIfNotExists<
   return n;
 }
 
-interface IRule<
-  Name extends string = string,
-  S extends IAgent = IAgent,
-  D extends IAgent = IAgent,
-  SP extends S["ports"][keyof S["ports"]] = S["ports"][keyof S["ports"]],
-  DP extends D["ports"][keyof D["ports"]] = D["ports"][keyof D["ports"]],
-> {
-  name: Name;
-  connection: IConnection<string, S, D, SP, DP>;
-  action: Action<S, D>;
-}

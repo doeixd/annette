@@ -54,7 +54,6 @@ const decrementRule = ActionRule(
 // Define an ActionRule for Counter<->Display interaction
 // Name parameter is optional - shown here with explicit name for comparison
 const displayRule = ActionRule(
-  "display-counter", // Optional explicit name
   counter.ports.main,
   display.ports.main,
   (counter, display, network) => {

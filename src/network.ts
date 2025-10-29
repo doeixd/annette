@@ -304,7 +304,7 @@ export interface INetwork<Name extends string = string, A extends IAgent = IAgen
 export function Network<
   Name extends string,
   A extends IAgent = IAgent,
->(name: Name, agents?: A[], rules?: AnyRule[]) {
+>(name: Name, agents?: A[], rules?: AnyRule[]): INetwork<Name, A> {
   const networkId = uuidv4();
   
   // Create type registry for fast type-based matching
@@ -347,60 +347,83 @@ export function Network<
   function addRuleInternal(rule: AnyRule): void {
     if (rule.type === 'action' || rule.type === 'rewrite') {
       const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
-      
+
       // Get type IDs for faster rule matching
       const typeId1 = typeRegistry.getTypeId(agentName1);
       const typeId2 = typeRegistry.getTypeId(agentName2);
-      
+
       // Store the type IDs in the rule for faster access (non-breaking addition)
       (rule as any)._typeId1 = typeId1;
       (rule as any)._typeId2 = typeId2;
-      
+
       // Traditional string-based key for backward compatibility
       const ruleKey = getRuleLookupKey(agentName1, portName1, agentName2, portName2);
       state.rules.set(ruleKey, rule);
-      
+
+      // Clear rule resolution cache when adding new rules
+      ruleResolutionCache.clear();
+    } else if (rule.type === 'deterministic_action') {
+      // Handle deterministic action rules
+      const { agentName1, portName1, agentName2, portName2 } = rule.matchInfo;
+
+      // Get type IDs for faster rule matching
+      const typeId1 = typeRegistry.getTypeId(agentName1);
+      const typeId2 = typeRegistry.getTypeId(agentName2);
+
+      // Store the type IDs in the rule for faster access (non-breaking addition)
+      (rule as any)._typeId1 = typeId1;
+      (rule as any)._typeId2 = typeId2;
+
+      // Traditional string-based key for backward compatibility
+      const ruleKey = getRuleLookupKey(agentName1, portName1, agentName2, portName2);
+      state.rules.set(ruleKey, rule);
+
       // Clear rule resolution cache when adding new rules
       ruleResolutionCache.clear();
     } else {
-      // Legacy rule format
-      const legacyRule = rule as IRule;
-      const source = legacyRule.connection.source;
-      const destination = legacyRule.connection.destination;
-      const sourcePort = legacyRule.connection.sourcePort;
-      const destPort = legacyRule.connection.destinationPort;
+      // Legacy rule format - check if it has connection property
+      if ('connection' in rule) {
+        const legacyRule = rule as IRule;
+        const source = legacyRule.connection.source;
+        const destination = legacyRule.connection.destination;
+        const sourcePort = legacyRule.connection.sourcePort;
+        const destPort = legacyRule.connection.destinationPort;
 
-      // Convert to new rule format
-      const actionRule: IActionRule = {
-        type: 'action',
-        name: legacyRule.name,
-        matchInfo: {
-          agentName1: source.name,
-          portName1: sourcePort.name,
-          agentName2: destination.name,
-          portName2: destPort.name
-        },
-        action: (agent1, agent2, network) => legacyRule.action(agent1, agent2, network as any)
-      };
-      
-      // Get type IDs for faster rule matching
-      const typeId1 = typeRegistry.getTypeId(source.name);
-      const typeId2 = typeRegistry.getTypeId(destination.name);
-      
-      // Store the type IDs in the rule for faster access
-      (actionRule as any)._typeId1 = typeId1;
-      (actionRule as any)._typeId2 = typeId2;
+        // Convert to new rule format
+        const actionRule: IActionRule = {
+          type: 'action',
+          name: legacyRule.name,
+          matchInfo: {
+            agentName1: source.name,
+            portName1: sourcePort.name,
+            agentName2: destination.name,
+            portName2: destPort.name
+          },
+          action: (agent1, agent2, network) => legacyRule.action(agent1, agent2, network as any)
+        };
 
-      const ruleKey = getRuleLookupKey(
-        actionRule.matchInfo.agentName1,
-        actionRule.matchInfo.portName1,
-        actionRule.matchInfo.agentName2,
-        actionRule.matchInfo.portName2
-      );
-      state.rules.set(ruleKey, actionRule);
-      
-      // Clear rule resolution cache when adding new rules
-      ruleResolutionCache.clear();
+        // Get type IDs for faster rule matching
+        const typeId1 = typeRegistry.getTypeId(source.name);
+        const typeId2 = typeRegistry.getTypeId(destination.name);
+
+        // Store the type IDs in the rule for faster access
+        (actionRule as any)._typeId1 = typeId1;
+        (actionRule as any)._typeId2 = typeId2;
+
+        const ruleKey = getRuleLookupKey(
+          actionRule.matchInfo.agentName1,
+          actionRule.matchInfo.portName1,
+          actionRule.matchInfo.agentName2,
+          actionRule.matchInfo.portName2
+        );
+        state.rules.set(ruleKey, actionRule);
+
+        // Clear rule resolution cache when adding new rules
+        ruleResolutionCache.clear();
+      } else {
+        // Handle other rule types or throw error for unsupported types
+        throw new Error(`Unsupported rule type: ${(rule as any).type || 'unknown'}`);
+      }
     }
   }
 
