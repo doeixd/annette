@@ -17,6 +17,17 @@ export type ZeroRootScope = {
   dispose: () => void;
 };
 
+export type ZeroContext<T> = {
+  id: string;
+  defaultValue?: T;
+  hasDefault: boolean;
+};
+
+export type ZeroPipeNode<Input = unknown, Output = unknown> = {
+  input: ZeroPort<Input>;
+  output: ZeroPort<Output>;
+};
+
 export type ZeroAgentInstance = {
   id: string;
   name: string;
@@ -34,6 +45,13 @@ export type ZeroNetwork = {
   ) => (state: State) => ZeroAgent<Name, Ports>;
   createPort: <T>(handler?: (data: T, source?: ZeroPort<any>) => void) => ZeroPort<T>;
   connect: ZeroConnect;
+  pipe: <T extends ZeroPipeNode<any, any>>(
+    first: T,
+    ...rest: Array<ZeroPipeNode<any, any>>
+  ) => ZeroPipeNode<any, any>;
+  createContext: <T>(defaultValue?: T) => ZeroContext<T>;
+  useContext: <T>(context: ZeroContext<T>) => T;
+  provide: <T, R>(context: ZeroContext<T>, value: T, fn: () => R) => R;
   onCleanup: (cleanup: () => void) => void;
   getCurrentAgent: () => ZeroAgentInstance | null;
   run: <T>(fn: (dispose: () => void) => T) => T;
@@ -63,6 +81,8 @@ const createZeroNetwork = (): ZeroNetwork => {
   let currentAgent: ZeroAgentInstance | null = null;
   let agentIdCounter = 0;
   let portIdCounter = 0;
+  let contextIdCounter = 0;
+  const contextStack: Array<{ id: string; value: unknown }> = [];
 
   const createAgentInstance = (name: string): ZeroAgentInstance => {
     const cleanups = new Set<() => void>();
@@ -102,7 +122,10 @@ const createZeroNetwork = (): ZeroNetwork => {
     const port = ((data: T) => {
       if (port._peer) {
         port._peer(data, port);
+        return;
       }
+
+      port._handler(data, port);
     }) as ZeroPort<T>;
 
     port._id = `zero-port-${portIdCounter++}`;
@@ -124,6 +147,51 @@ const createZeroNetwork = (): ZeroNetwork => {
   const connect: ZeroConnect = (a, b) => {
     a._peer = b._handler as (data: any, source?: ZeroPort<any>) => void;
     b._peer = a._handler as (data: any, source?: ZeroPort<any>) => void;
+  };
+
+  const pipe = <T extends ZeroPipeNode<any, any>>(
+    first: T,
+    ...rest: Array<ZeroPipeNode<any, any>>
+  ): ZeroPipeNode<any, any> => {
+    let current: ZeroPipeNode<any, any> = first;
+    for (const next of rest) {
+      connect(current.output, next.input);
+      current = next;
+    }
+    return current;
+  };
+
+  const createContext = <T>(...args: [T?]): ZeroContext<T> => {
+    const hasDefault = args.length > 0;
+    const defaultValue = args[0];
+    return {
+      id: `zero-context-${contextIdCounter++}`,
+      defaultValue,
+      hasDefault
+    };
+  };
+
+  const useContext = <T>(context: ZeroContext<T>): T => {
+    for (let i = contextStack.length - 1; i >= 0; i--) {
+      if (contextStack[i].id === context.id) {
+        return contextStack[i].value as T;
+      }
+    }
+
+    if (context.hasDefault) {
+      return context.defaultValue as T;
+    }
+
+    throw new Error(`No provider found for context ${context.id}`);
+  };
+
+  const provide = <T, R>(context: ZeroContext<T>, value: T, fn: () => R): R => {
+    contextStack.push({ id: context.id, value });
+    try {
+      return fn();
+    } finally {
+      contextStack.pop();
+    }
   };
 
   const onCleanup = (cleanup: () => void) => {
@@ -172,6 +240,10 @@ const createZeroNetwork = (): ZeroNetwork => {
     Agent,
     createPort,
     connect,
+    pipe,
+    createContext,
+    useContext,
+    provide,
     onCleanup,
     getCurrentAgent,
     run,
@@ -189,6 +261,10 @@ export const onCleanup = defaultNetwork.onCleanup;
 export const getCurrentAgent = defaultNetwork.getCurrentAgent;
 export const createPort = defaultNetwork.createPort;
 export const connect = defaultNetwork.connect;
+export const pipe = defaultNetwork.pipe;
+export const createContext = defaultNetwork.createContext;
+export const useContext = defaultNetwork.useContext;
+export const provide = defaultNetwork.provide;
 export const Agent = defaultNetwork.Agent;
 
 export * as middleware from "./middleware";

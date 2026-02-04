@@ -182,6 +182,80 @@ describe("zero module", () => {
     });
   });
 
+  it("pipes linear agents", () => {
+    const zeroNetwork = zero.createNetwork();
+
+    zeroNetwork.run(() => {
+      const Source = zeroNetwork.Agent("Source", (value: number) => {
+        const output = zeroNetwork.createPort<number>(() => {
+          // noop
+        });
+        const input = zeroNetwork.createPort<number>((next) => {
+          output(next);
+        });
+        const emit = () => input(value);
+        return { input, output, emit };
+      });
+
+      const Double = zeroNetwork.Agent("Double", (_state: void) => {
+        const output = zeroNetwork.createPort<number>(() => {
+          // noop
+        });
+        const input = zeroNetwork.createPort<number>((value) => {
+          output(value * 2);
+        });
+        return { input, output };
+      });
+
+      const Sink = zeroNetwork.Agent("Sink", (_state: void) => {
+        let last = 0;
+        const output = zeroNetwork.createPort<number>(() => {
+          // noop
+        });
+        const input = zeroNetwork.createPort<number>((value) => {
+          last = value;
+          output(value);
+        });
+        const read = () => last;
+        return { input, output, read };
+      });
+
+      const source = Source(3);
+      const double = Double(undefined);
+      const sink = Sink(undefined);
+
+      zeroNetwork.pipe(source, double, sink);
+      source.emit();
+
+      expect(sink.read()).toBe(6);
+    });
+  });
+
+  it("provides and resolves context values", () => {
+    const zeroNetwork = zero.createNetwork();
+    const DbContext = zeroNetwork.createContext<zero.ZeroPort<string>>();
+
+    zeroNetwork.run(() => {
+      let received: string | null = null;
+      const dbQuery = zeroNetwork.createPort<string>((query) => {
+        received = query;
+      });
+
+      const UserList = zeroNetwork.Agent("UserList", (_state: void) => {
+        const query = zeroNetwork.useContext(DbContext);
+        const refresh = () => query("SELECT * FROM users");
+        return { refresh };
+      });
+
+      zeroNetwork.provide(DbContext, dbQuery, () => {
+        const list = UserList(undefined);
+        list.refresh();
+      });
+
+      expect(received).toBe("SELECT * FROM users");
+    });
+  });
+
   it("connects many targets", () => {
     const zeroNetwork = zero.createNetwork();
 
