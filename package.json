@@ -1,6 +1,6 @@
 {
   "name": "annette",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "files": [
     "dist",
     "src"
@@ -32,7 +32,6 @@
     "type-check": "pridepack check",
     "type-check:examples": "tsc -p examples/tsconfig.json --noEmit",
     "clean": "pridepack clean",
-
     "watch": "pridepack watch",
     "start": "pridepack start",
     "dev": "pridepack dev",
