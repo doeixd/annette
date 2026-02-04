@@ -130,21 +130,29 @@ const normalizeFactoryOptions = <P extends PortArray | PortsDefObj | PortsMap, T
   return { ports: portsOrOptions as P | undefined };
 };
 
-export const createAgentFactory = <Name extends string, Value, Type extends string = string, P extends PortArray | PortsDefObj | PortsMap = PortArray | PortsDefObj | PortsMap>(
+export function createAgentFactory<Name extends string, Value, Type extends string = string, P extends PortArray | PortsDefObj | PortsMap = PortArray | PortsDefObj | PortsMap>(
   name: Name,
   portsOrOptions?: P | AgentFactoryOptions<P, Type>
-): AgentFactory<Name, Value, Type, P> => {
-  const options = normalizeFactoryOptions<P, Type>(portsOrOptions);
-  const factory = ((value: Value, portsOverride?: P) => {
+): AgentFactory<Name, Value, Type, P>;
+export function createAgentFactory<Value, Name extends string = string, Type extends string = string, P extends PortArray | PortsDefObj | PortsMap = PortArray | PortsDefObj | PortsMap>(
+  name: Name,
+  portsOrOptions?: P | AgentFactoryOptions<P, Type>
+): AgentFactory<Name, Value, Type, P>;
+export function createAgentFactory(
+  name: string,
+  portsOrOptions?: PortArray | PortsDefObj | PortsMap | AgentFactoryOptions<PortArray | PortsDefObj | PortsMap, string>
+) {
+  const options = normalizeFactoryOptions<any, any>(portsOrOptions);
+  const factory = ((value: any, portsOverride?: any) => {
     return Agent(name, value, portsOverride ?? options.ports, options.type);
-  }) as AgentFactory<Name, Value, Type, P>;
+  }) as AgentFactory<string, any, string, any>;
 
   factory.__agentName = name;
   factory.__ports = options.ports;
   factory.__type = options.type;
 
   return factory;
-};
+}
 
 export const createAgentFactoryFrom = <TAgent extends IAgent>(agent: TAgent) => {
   const ports = Object.fromEntries(

@@ -53,9 +53,11 @@ npm install annette
   - [Core Engine](#core-engine)
   - [Standard Library](#standard-library)
   - [Application Layer](#application-layer)
+- [The Network is a CRDT](#the-network-is-a-crdt)
 - [Examples](#examples)
 - [When to Use Annette](#when-to-use-annette)
 - [Tutorials](#tutorials)
+
 
 ## Quick Start
 
@@ -123,9 +125,15 @@ scope.reduce(() => {
 });
 ```
 
+Scope helpers:
+- `scope.step()` queues work inside the callback, then runs one step.
+- `scope.reduce()` queues work inside the callback, then reduces until quiescent.
+- `scope.manual()` runs without auto-stepping and returns your callback value.
+
 The scoped helpers include factory-based `Agent`, `Port`, `Rule`, and `Connection` utilities so you can stay inside the same network context. Use `autoDisconnectMain` if you plan to queue multiple method calls before stepping.
 
 `batch()` groups method calls and runs a single step (or `batch.reduce()` to exhaust all pending work). `untrack()` runs a callback without tracking, so no agents, connections, or rules are registered.
+
 
 ```typescript
 const { batch, untrack } = createNetwork('app');
@@ -177,7 +185,12 @@ connect(counter, incrementer);
 step();
 ```
 
+Fluent rule chains let you refine matching and outcomes:
+- `rules.when()` returns a builder with `.on()`, `.where()`, `.consume()`, `.spawn()`, `.transform()`, and `.mutate()`.
+- Wrapper helpers like `consume()` and `spawn()` adapt handlers for `fnAgent()` or `withConnections()`.
+
 You can also attach pair interactions directly on an agent factory:
+
 
 ```typescript
 import { pair } from 'annette';
@@ -187,6 +200,35 @@ withConnections(Counter, {
     counter.value += incrementer.value;
   })
 });
+```
+
+## Storylines
+
+Storylines let you record method calls and replay or serialize them later:
+
+```typescript
+import { createNetwork } from 'annette';
+
+const { Agent, withConnections, storyline } = createNetwork('app');
+
+const Counter = withConnections(Agent.factory<number>('Counter'), {
+  add: (counter) => {
+    counter.value += 1;
+  }
+}, { autoDisconnectMain: true });
+
+const story = storyline(Counter, function* (counter) {
+  yield* counter.add();
+  yield* counter.add();
+  return counter;
+});
+
+const counter = Counter(0);
+story.apply(counter);
+
+const serialized = story.serialize({ format: 'json' });
+const replay = story.deserialize(serialized, { format: 'json' });
+replay.apply(counter);
 ```
 
 ## Nested Networks
@@ -261,8 +303,14 @@ const ProcessorFactory = Agent.factoryFrom(processor);
 const cloned = ProcessorFactory({ status: "ready" });
 ```
 
+`Agent.factory()` infers the name from the string literal, so you can provide only the value type:
+
+```typescript
+const Counter = Agent.factory<number>('Counter');
+```
 
 **Key Insight**: Agents are like actors in a play - they have a role (name), state (value), and ways to communicate (ports).
+
 
 ### Ports
 
@@ -909,7 +957,18 @@ interface INetwork<Name extends string = string, A extends IAgent = IAgent> {
 }
 ```
 
+## The Network is a CRDT
+
+Annette's interaction nets have **confluence** — the same result regardless of operation order. This means:
+
+- No conflict resolution code needed
+- Distributed sync "just works"
+- Time travel is free (replay the interaction log)
+
+You don't build CRDTs on Annette. The network already *is* one.
+
 ## Examples
+
 
 Check out the [examples directory](./examples/) for more comprehensive examples:
 
