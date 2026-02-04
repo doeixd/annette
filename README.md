@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/doeixd/annette/refs/heads/main/assets/annette.svg" width="165"  />
+<img src="https://raw.githubusercontent.com/doeixd/annette/refs/heads/main/assets/logo.png" width="165"  />
 
 
 # Annette
