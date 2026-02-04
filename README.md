@@ -1,4 +1,5 @@
-<img src="assets/logo.png" width="165"  />
+<img src="https://raw.githubusercontent.com/doeixd/annette/refs/heads/main/assets/annette.svg" width="165"  />
+
 
 # Annette
 
@@ -122,6 +123,10 @@ scope.reduce(() => {
 ```
 
 The scoped helpers include factory-based `Agent`, `Port`, `Rule`, and `Connection` utilities so you can stay inside the same network context. Use `autoDisconnectMain` if you plan to queue multiple method calls before stepping.
+
+Operational notes:
+- `rules.list()` includes symmetric rules by default. Pass `{ includeSymmetric: false }` to hide mirrored entries.
+- `asNestedNetwork()` wraps a scoped network when embedding it inside another agent value.
 
 ## Rule DSL (New)
 

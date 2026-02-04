@@ -1173,6 +1173,12 @@ const nested = asNestedNetwork(child);
 nested.step();
 nested.reduce();
 ```
+
+Rule listings include symmetric rules by default. Use:
+
+```typescript
+rules.list({ includeSymmetric: false });
+```
 ```
 
 **Example:**
