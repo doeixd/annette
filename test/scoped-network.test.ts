@@ -59,6 +59,70 @@ describe('Scoped Network API', () => {
     expect(counter.value).toBe(2);
   });
 
+  it('batches method calls with a single step', () => {
+    const { Agent, withConnections, batch } = createNetwork('scoped-batch');
+    const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+      add: (counter) => {
+        counter.value += 1;
+      }
+    }, { autoDisconnectMain: true });
+
+    const counter = Counter(0);
+    let insideValue = 0;
+
+    batch(() => {
+      counter.add();
+      counter.add();
+      insideValue = counter.value;
+    });
+
+    expect(insideValue).toBe(0);
+    expect(counter.value).toBe(1);
+  });
+
+  it('reduces batched calls when requested', () => {
+    const { Agent, withConnections, batch } = createNetwork('scoped-batch-reduce');
+    const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+      add: (counter) => {
+        counter.value += 1;
+      }
+    }, { autoDisconnectMain: true });
+
+    const counter = Counter(0);
+    let insideValue = 0;
+
+    batch.reduce(() => {
+      counter.add();
+      insideValue = counter.value;
+    });
+
+    expect(insideValue).toBe(0);
+    expect(counter.value).toBe(1);
+  });
+
+  it('skips tracking inside untrack', () => {
+    const { Agent, withConnections, untrack, network } = createNetwork('scoped-untrack');
+    const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+      add: (counter) => {
+        counter.value += 1;
+      }
+    });
+
+    const counter = Counter(0);
+
+    untrack(() => {
+      counter.add();
+    });
+
+    expect(counter.value).toBe(0);
+
+    untrack(() => {
+      Counter(1);
+    });
+
+    expect(network.getAllAgents()).toHaveLength(1);
+  });
+
   it('updates derived agents after every step', () => {
     const { Agent, withConnections, derived } = createNetwork('scoped-derived');
     const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {

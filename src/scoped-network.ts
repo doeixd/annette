@@ -233,12 +233,25 @@ type ScopeMode = 'defer' | 'step' | 'reduce' | 'manual';
 type ScopeContext = {
   mode: ScopeMode;
   pending: boolean;
+  tracking: 'enabled' | 'disabled';
 };
 
 export type NetworkScope = {
   (callback: () => void): void;
   step: (callback: () => void) => void;
   reduce: (callback: () => void) => void;
+  manual: <T>(callback: (net: ScopedNetwork) => T) => T;
+};
+
+export type BatchScope = {
+  (callback: () => void): void;
+  step: (callback: () => void) => void;
+  reduce: (callback: () => void) => void;
+  manual: <T>(callback: (net: ScopedNetwork) => T) => T;
+};
+
+export type UntrackScope = {
+  (callback: () => void): void;
   manual: <T>(callback: (net: ScopedNetwork) => T) => T;
 };
 
@@ -268,6 +281,8 @@ export type ScopedNetwork = {
   ) => AgentFactory<Name, Value>;
   connect: (...args: any[]) => IConnection | undefined;
   scope: NetworkScope;
+  batch: BatchScope;
+  untrack: UntrackScope;
   derived: <N extends string, V, T extends string = string, P extends PortsDefinition = PortsDefinition>(
     factory: AgentFactory<N, V, T, P>,
     compute: (agent: IAgent<N, V, T, P>) => any
@@ -567,14 +582,14 @@ export function createNetwork(name: string): ScopedNetwork {
     return commands;
   };
 
-  const runInScope = (mode: ScopeMode, callback: () => void) => {
-    const context: ScopeContext = { mode, pending: false };
+  const runInScope = (mode: ScopeMode, callback: () => void, tracking: ScopeContext['tracking'] = 'enabled') => {
+    const context: ScopeContext = { mode, pending: false, tracking };
     scopeStack.push(context);
     try {
       callback();
     } finally {
       scopeStack.pop();
-      if (context.pending) {
+      if (context.pending && context.tracking === 'enabled') {
         if (context.mode === 'step') {
           scopedStep();
         } else if (context.mode === 'reduce') {
@@ -586,6 +601,8 @@ export function createNetwork(name: string): ScopedNetwork {
 
   const getScope = () => scopeStack[scopeStack.length - 1];
 
+  const isTrackingEnabled = () => getScope()?.tracking !== 'disabled';
+
   const attachMethods = (agent: IAgent) => {
     const methods = methodRegistry.get(agent.name);
     if (!methods) return;
@@ -595,6 +612,10 @@ export function createNetwork(name: string): ScopedNetwork {
 
       Object.defineProperty(agent, methodName, {
         value: (...args: any[]) => {
+          if (!isTrackingEnabled()) {
+            return agent;
+          }
+
           if (definition.mode === 'pair') {
             const [otherAgent, ...rest] = args;
 
@@ -615,12 +636,16 @@ export function createNetwork(name: string): ScopedNetwork {
               throw new Error(`Invalid port selection for ${methodName}.`);
             }
 
-            network.connectPorts(leftPort, rightPort);
+            if (isTrackingEnabled()) {
+              network.connectPorts(leftPort, rightPort);
+            }
           } else {
             const opAgent = BaseAgent(definition.opName as AgentName, { args });
-            network.addAgent(opAgent);
+            if (isTrackingEnabled()) {
+              network.addAgent(opAgent);
+            }
 
-            if (definition.autoDisconnectMain && network.isPortConnected(agent.ports.main)) {
+            if (isTrackingEnabled() && definition.autoDisconnectMain && network.isPortConnected(agent.ports.main)) {
               const connections = network.findConnections({ from: agent.ports.main }).concat(
                 network.findConnections({ to: agent.ports.main })
               );
@@ -632,7 +657,9 @@ export function createNetwork(name: string): ScopedNetwork {
               }
             }
 
-            network.connectPorts(agent.ports.main, opAgent.ports.main);
+            if (isTrackingEnabled()) {
+              network.connectPorts(agent.ports.main, opAgent.ports.main);
+            }
           }
 
           const scope = getScope();
@@ -912,9 +939,14 @@ export function createNetwork(name: string): ScopedNetwork {
   ) => {
     const factory = ((value: V, portsOverride?: P) => {
       const agent = BaseAgent(name, value, portsOverride ?? options?.ports, options?.type);
-      network.addAgent(agent);
+      if (isTrackingEnabled()) {
+        network.addAgent(agent);
+      }
       attachMethods(agent);
       return agent;
+
+
+
     }) as AgentFactory<N, V, T, P>;
 
     factory.__agentName = name;
@@ -959,6 +991,10 @@ export function createNetwork(name: string): ScopedNetwork {
     methods: Methods,
     options?: WithConnectionsOptions
   ) => {
+    if (!isTrackingEnabled()) {
+      return factory as AgentFactoryWithMethods<Name, Value, Type, P, Methods>;
+    }
+
     const agentName = factory.__agentName;
     const registered = methodRegistry.get(agentName) ?? new Map<string, RegisteredMethod>();
 
@@ -1054,6 +1090,9 @@ export function createNetwork(name: string): ScopedNetwork {
   };
 
   const connect = (source: IAgent | IBoundPort, destination: IAgent | IBoundPort, name?: string) => {
+    if (!isTrackingEnabled()) {
+      return undefined;
+    }
     if (isBoundPort(source) && isBoundPort(destination)) {
       return network.connectPorts(source, destination, name);
     }
@@ -1096,6 +1135,34 @@ export function createNetwork(name: string): ScopedNetwork {
         runInScope('manual', () => {
           result = callback(scopedNetwork);
         });
+        return result!;
+      }
+    }
+  );
+
+  const batch: BatchScope = Object.assign(
+    (callback: () => void) => runInScope('step', callback),
+    {
+      step: (callback: () => void) => runInScope('step', callback),
+      reduce: (callback: () => void) => runInScope('reduce', callback),
+      manual: <T>(callback: (net: ScopedNetwork) => T) => {
+        let result: T;
+        runInScope('manual', () => {
+          result = callback(scopedNetwork);
+        });
+        return result!;
+      }
+    }
+  );
+
+  const untrack: UntrackScope = Object.assign(
+    (callback: () => void) => runInScope('defer', callback, 'disabled'),
+    {
+      manual: <T>(callback: (net: ScopedNetwork) => T) => {
+        let result: T;
+        runInScope('manual', () => {
+          result = callback(scopedNetwork);
+        }, 'disabled');
         return result!;
       }
     }
@@ -1330,6 +1397,8 @@ export function createNetwork(name: string): ScopedNetwork {
     fnAgent,
     connect,
     scope,
+    batch,
+    untrack,
     derived,
     storyline,
     sync,

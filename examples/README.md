@@ -9,7 +9,7 @@ This directory contains example code demonstrating various features of the Annet
 - `object-api.js` - Example of the object-based API
 - `dynamic-typed.js` / `dynamic-typed.ts` - Examples of dynamic typing in JavaScript and TypeScript
 - `typed-api.ts` - Example demonstrating TypeScript typing features
-- `scoped-network.ts` - Scoped network API with factories
+- `scoped-network.ts` - Scoped network API with factories, batching, and untracking
 - `rule-dsl.ts` - Fluent rule builder example
 - `nested-network.ts` - Agent hosting a scoped network
 

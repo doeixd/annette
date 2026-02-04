@@ -1,6 +1,6 @@
 import { createNetwork } from 'annette';
 
-const { Agent, withConnections, derived, scope, storyline } = createNetwork('scoped-example');
+const { Agent, withConnections, derived, scope, storyline, batch, untrack, network } = createNetwork('scoped-example');
 
 const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
   add: (counter) => {
@@ -20,6 +20,22 @@ scope.reduce(() => {
   counter.add();
   console.log('Scoped value:', counter.value);
 });
+
+const batched = Counter(0);
+batch(() => {
+  batched.add();
+  batched.add();
+  console.log('Batch inside:', batched.value);
+});
+console.log('Batch after:', batched.value);
+
+const beforeUntrack = network.getAllAgents().length;
+const untrackedCount = untrack.manual((net) => {
+  const temp = Counter(5);
+  console.log('Untracked agent:', temp._agentId);
+  return net.network.getAllAgents().length;
+});
+console.log('Agent count:', beforeUntrack, untrackedCount, network.getAllAgents().length);
 
 const Doubled = derived(Counter, (counter) => counter.value * 2);
 const counter = Counter(1);

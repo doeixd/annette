@@ -125,6 +125,26 @@ scope.reduce(() => {
 
 The scoped helpers include factory-based `Agent`, `Port`, `Rule`, and `Connection` utilities so you can stay inside the same network context. Use `autoDisconnectMain` if you plan to queue multiple method calls before stepping.
 
+`batch()` groups method calls and runs a single step (or `batch.reduce()` to exhaust all pending work). `untrack()` runs a callback without tracking, so no agents, connections, or rules are registered.
+
+```typescript
+const { batch, untrack } = createNetwork('app');
+
+batch(() => {
+  counter.add();
+  counter.add();
+});
+
+batch.reduce(() => {
+  counter.add();
+  counter.add();
+});
+
+untrack(() => {
+  Counter(1); // not added to the network
+});
+```
+
 Operational notes:
 - `rules.list()` includes symmetric rules by default. Pass `{ includeSymmetric: false }` to hide mirrored entries.
 - `asNestedNetwork()` wraps a scoped network when embedding it inside another agent value.
