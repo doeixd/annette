@@ -5,6 +5,7 @@ This document provides detailed information about the Annette API, organized by 
 ## Table of Contents
 
 - [Conventions](#conventions)
+- [Semantics & Guarantees](#semantics--guarantees)
 - [Core Engine Layer](#core-engine-layer)
   - [Agent System](#agent-system)
   - [Port System](#port-system)
@@ -26,11 +27,8 @@ This document provides detailed information about the Annette API, organized by 
   - [Rule DSL](#rule-dsl)
   - [Storylines](#storylines)
   - [Serialization](#serialization)
-
   - [Distributed Networks](#distributed-networks)
-
   - [Vector Clocks](#vector-clocks)
-
   - [Conflict Resolution](#conflict-resolution)
   - [Fine-grained Reactivity](#fine-grained-reactivity)
   - [Component Model](#component-model)
@@ -40,6 +38,7 @@ This document provides detailed information about the Annette API, organized by 
   - [Error Handling](#error-handling)
   - [Debugging Tools](#debugging-tools)
   - [Performance Optimizations](#performance-optimizations)
+
 
 ## Conventions
 
@@ -54,6 +53,18 @@ Annette APIs are organized by layer (core → standard library → application).
 - Connecting the same `main` port twice throws unless `autoDisconnectMain` is enabled.
 - Rules that read non-deterministic state (`Date.now()`, `Math.random()`, I/O) break replay and distributed convergence.
 - `reduce()` can run indefinitely if your rules keep producing new redexes.
+
+## Semantics & Guarantees
+
+**`step()` selection:** One interaction is chosen from the current active connections. Internally the network iterates the active-pair set in insertion order and executes the first match. If creation order differs, the chosen pair can differ.
+
+**Determinism:** Given identical agent/connection insertion order and pure rule handlers, reductions are deterministic. Non-deterministic logic or different insertion order can diverge.
+
+**Quiescent state:** A network is quiescent when `step()` returns `false` (no active pair with an applicable rule). In scoped APIs, pending work is executed only when the scope finishes.
+
+**Replayability:** Time travel stores snapshots of agent values and connections. Sync operations are built from tracked change history. Only `TrackedAction` and updater-based changes are guaranteed to be replayable across replicas.
+
+**Confluence:** Confluence applies to pure interaction-net reductions; arbitrary `ActionRule` side effects or external I/O can break convergence.
 
 ## Core Engine Layer
 
@@ -643,6 +654,13 @@ registerUpdaterRules(network, ["Document", "UserProfile"]);
 
 The Effect system provides algebraic effects for handling asynchronous operations.
 
+**Effect flow:**
+- An `EffectAgent` is introduced with a description payload.
+- A `HandlerAgent` matches by effect `type` and returns a value or promise.
+- A `ResultAgent` (or error agent) is created and connected back.
+- `ResultScanner` collects or forwards results.
+
+
 #### `EffectAgent(description)`
 
 Creates an effect agent.
@@ -1197,6 +1215,14 @@ These APIs ship in one package, but map to distinct domains:
 - `@annette/reactive`: signals, memos, fine-grained reactivity
 - `@annette/ui` (experimental): component model + DOM renderer
 
+These are conceptual groupings; imports currently come from `annette`:
+
+```typescript
+import { createNetwork } from 'annette';
+import { SyncNetwork } from 'annette';
+import { createSignal } from 'annette';
+```
+
 ### Scoped Network API
 
 The scoped API creates a bound set of helpers for a single network instance. Use it to avoid passing the network around and to define typed factories plus methods in one place.
@@ -1533,8 +1559,10 @@ type SyncOperation = {
 
 **Gotchas:**
 - Both ends must register sync rules (`registerSyncRules`) before applying operations.
-- Use consistent `sourceId` values per client to avoid replaying local operations.
+- Use consistent `source` values per client to avoid replaying local operations.
 - If transports reorder operations, rely on vector clocks + conflict resolver to reconcile.
+- Vector clocks live at a higher layer than `SyncOperation` (they are not embedded in the operation payload).
+- `version` is currently a schema version for the operation payload (currently `1`), not a global counter.
 
 #### `createDistributedNetworkServer(options)`
 
@@ -2272,4 +2300,5 @@ const net = createOptimizedNetwork(network, {
 
 **Gotchas:**
 - Parallel processing requires a worker script URL and is best-effort; it is not a deterministic reduction guarantee.
+- Lazy evaluation can change the observable order of reductions; do not assume stable ordering.
 - These optimizations are optional; validate performance impact for your workload.
