@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createNetwork, ActionRule, Rule, Connection, Port, consume, pair } from '../src';
+import { createNetwork, ActionRule, Rule, Connection, Port, consume, pair, asNestedNetwork } from '../src';
 
 describe('Scoped Network API', () => {
   it('creates agent factories with ports', () => {
@@ -377,5 +377,80 @@ describe('Scoped Network API', () => {
     expect(list.length).toBe(2);
     expect(baseList.length).toBe(1);
     expect(rules.canInteract(B, A)).toBe(true);
+  });
+
+  it('allows single operations without autoDisconnectMain', () => {
+    const { Agent, withConnections } = createNetwork('auto-disconnect');
+    const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+      add: (counter) => {
+        counter.value += 1;
+      }
+    });
+
+    const counter = Counter(0);
+    counter.add();
+
+    expect(counter.value).toBe(1);
+  });
+
+  it('rejects non-agent arguments for pair methods', () => {
+    const { Agent, withConnections } = createNetwork('pair-arg-guard');
+    const Counter = Agent.factory<'Counter', number>('Counter');
+    const Incrementer = Agent.factory<'Incrementer', number>('Incrementer');
+
+    const CounterWithPairs = withConnections(Counter, {
+      applyIncrement: pair(Incrementer, (counter, incrementer) => {
+        counter.value += incrementer.value;
+      })
+    }, { autoDisconnectMain: true });
+
+    const counter = CounterWithPairs(1);
+    expect(() => {
+      (counter as any).applyIncrement('bad');
+    }).toThrow('expects an agent');
+  });
+
+  it('supports consume on both sides', () => {
+    const { Agent, rules, connect, step, network } = createNetwork('consume-both');
+    const A = Agent.factory<'A', number>('A');
+    const B = Agent.factory<'B', number>('B');
+
+    rules.when(A, B).consume('both', (a, b) => {
+      a.value += b.value;
+    });
+
+    const a = A(1);
+    const b = B(2);
+
+    connect(a, b);
+    step();
+
+    expect(network.getAllAgents().length).toBe(0);
+  });
+
+  it('wraps nested networks with asNestedNetwork', () => {
+    const { Agent, withConnections } = createNetwork('nested-helper');
+    const child = createNetwork('nested-child');
+
+    const Counter = child.withConnections(child.Agent.factory<'Counter', number>('Counter'), {
+      add: (counter) => {
+        counter.value += 1;
+      }
+    }, { autoDisconnectMain: true });
+
+    const nested = asNestedNetwork(child);
+    const Host = withConnections(Agent.factory<'Host', typeof child>('Host'), {
+      stepInner: () => {
+        nested.step();
+      }
+    }, { autoDisconnectMain: true });
+
+    const host = Host(child);
+    const counter = Counter(0);
+
+    counter.add();
+    host.stepInner();
+
+    expect(counter.value).toBe(1);
   });
 });

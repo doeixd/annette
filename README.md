@@ -5,7 +5,8 @@
 
 A TypeScript library for crafting interaction nets, with abstractions for reactive programming, state management, distributed systems, and more.
 
-[![npm version](https://badge.fury.io/js/annette.svg)](https://www.npmjs.com/package/annette)
+[![npm version](https://badge.fury.io/js/annette.svg)](https://www.npmjs.com/package/annette) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/doeixd/annette)
+
 
 📖 [API Documentation](./api-documentation.md) | 📚 [Examples](./examples/) | 📦 [npm package](https://www.npmjs.com/package/annette)
 

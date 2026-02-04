@@ -1,5 +1,6 @@
- import { describe, it, expect, beforeEach } from 'vitest';
- import { Network, Agent } from '../src';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { Network, Agent, ActionRule, Port } from '../src';
+
 
  describe('Annette Library - Core Functionality', () => {
    let network: ReturnType<typeof Network>;
@@ -92,30 +93,82 @@
      });
    });
 
-   describe('Network Reduction and Stepping', () => {
-     it('can perform network steps', async () => {
-       const agent = Agent('test-agent', { value: 0 });
-       network.addAgent(agent);
+    describe('Network Reduction and Stepping', () => {
+      it('can perform network steps', async () => {
+        const agent = Agent('test-agent', { value: 0 });
+        network.addAgent(agent);
 
-       // Perform a step - this should not throw even if no rules are defined
-       const hasMoreSteps = await network.step();
-       expect(typeof hasMoreSteps).toBe('boolean');
-       // Should return false when no reductions are possible
-       expect(hasMoreSteps).toBe(false);
-     });
+        // Perform a step - this should not throw even if no rules are defined
+        const hasMoreSteps = await network.step();
+        expect(typeof hasMoreSteps).toBe('boolean');
+        // Should return false when no reductions are possible
+        expect(hasMoreSteps).toBe(false);
+      });
 
-     it('can perform network reduction', async () => {
-       const agent = Agent('test-agent', { value: 0 });
-       network.addAgent(agent);
+      it('can perform network reduction', async () => {
+        const agent = Agent('test-agent', { value: 0 });
+        network.addAgent(agent);
 
-       // Reduce until no more reductions possible
-       const totalReductions = await network.reduce();
-       expect(typeof totalReductions).toBe('number');
-       expect(totalReductions).toBeGreaterThanOrEqual(0);
-     });
-   });
+        // Reduce until no more reductions possible
+        const totalReductions = await network.reduce();
+        expect(typeof totalReductions).toBe('number');
+        expect(totalReductions).toBeGreaterThanOrEqual(0);
+      });
+    });
 
-   describe('Change History', () => {
+    describe('Connections and Rules', () => {
+      it('connects and disconnects ports', () => {
+        const left = Agent('Left', { value: 1 });
+        const right = Agent('Right', { value: 2 });
+
+        network.addAgent(left);
+        network.addAgent(right);
+
+        const connection = network.connectPorts(left.ports.main, right.ports.main);
+        expect(connection).toBeDefined();
+        expect(network.isPortConnected(left.ports.main)).toBe(true);
+
+        const found = network.findConnections({ from: left.ports.main });
+        expect(found.length).toBe(1);
+
+        const disconnected = network.disconnectPorts(left.ports.main, right.ports.main);
+        expect(disconnected).toBe(true);
+        expect(network.isPortConnected(left.ports.main)).toBe(false);
+      });
+
+      it('executes action rules on connection', () => {
+        const counter = Agent('Counter', { value: 0 });
+        const incrementer = Agent('Incrementer', { value: 2 });
+
+        network.addAgent(counter);
+        network.addAgent(incrementer);
+
+        const rule = ActionRule(counter.ports.main, incrementer.ports.main, (leftAgent, rightAgent) => {
+          leftAgent.value.value += rightAgent.value.value;
+          return [leftAgent, rightAgent];
+        });
+
+        network.addRule(rule);
+        network.connectPorts(counter.ports.main, incrementer.ports.main);
+
+        const progressed = network.step();
+        expect(progressed).toBe(true);
+        expect(counter.value.value).toBe(2);
+      });
+
+      it('creates custom port definitions', () => {
+        const custom = Agent('Custom', { value: 'ok' }, {
+          main: Port.main(),
+          extra: Port.aux('extra')
+        });
+
+        network.addAgent(custom);
+        expect(custom.ports.extra.type).toBe('aux');
+      });
+    });
+
+    describe('Change History', () => {
+
      it('tracks changes in network', () => {
        const agent = Agent('test', { value: 0 });
        network.addAgent(agent);
