@@ -4,6 +4,7 @@ This document provides detailed information about the Annette API, organized by 
 
 ## Table of Contents
 
+- [Conventions](#conventions)
 - [Core Engine Layer](#core-engine-layer)
   - [Agent System](#agent-system)
   - [Port System](#port-system)
@@ -20,6 +21,7 @@ This document provides detailed information about the Annette API, organized by 
   - [Reactive System](#reactive-system)
   - [Plugin System](#plugin-system)
 - [Application Layer](#application-layer)
+  - [Module Map](#module-map)
   - [Scoped Network API](#scoped-network-api)
   - [Rule DSL](#rule-dsl)
   - [Storylines](#storylines)
@@ -28,6 +30,7 @@ This document provides detailed information about the Annette API, organized by 
   - [Distributed Networks](#distributed-networks)
 
   - [Vector Clocks](#vector-clocks)
+
   - [Conflict Resolution](#conflict-resolution)
   - [Fine-grained Reactivity](#fine-grained-reactivity)
   - [Component Model](#component-model)
@@ -49,6 +52,8 @@ Annette APIs are organized by layer (core → standard library → application).
 **Gotchas:**
 - Methods declared with `withConnections` create network work; calling them outside a scope can step immediately.
 - Connecting the same `main` port twice throws unless `autoDisconnectMain` is enabled.
+- Rules that read non-deterministic state (`Date.now()`, `Math.random()`, I/O) break replay and distributed convergence.
+- `reduce()` can run indefinitely if your rules keep producing new redexes.
 
 ## Core Engine Layer
 
@@ -991,7 +996,9 @@ registerSpecializedUpdaterRules(network);
 
 ### Reactive System
 
-The Reactive system provides automatic dependency tracking for reactive values and derived computations. All primitives share a reactive network (created on first use), or you can initialize one explicitly.
+The Reactive system provides automatic dependency tracking for reactive values and derived computations. It includes two APIs:
+- **Reactive agent API**: backed by an internal Annette network (`createReactive`, `createComputed`, `createReactiveEffect`).
+- **Signal API**: Solid-style signals (`createSignal`, `createMemo`, `createEffect`, `createResource`).
 
 #### `createReactive(initialValue)`
 
@@ -1031,20 +1038,25 @@ function createComputed<T>(computation: () => T): Reactive<T>;
 
 **Returns:** A derived reactive accessor
 
-#### `createEffect(effect)`
+#### `createReactiveEffect(effect)`
 
-Creates a reactive side effect.
+Creates a reactive side effect (reactive agent API).
 
 ```typescript
-function createEffect(effect: () => void): void;
+function createReactiveEffect(effect: () => void): void;
 ```
 
 **Parameters:**
 - `effect`: Function to run when dependencies change
 
 **Gotchas:**
-- Reactive primitives use a shared network; call `initReactiveSystem(network)` to scope them to your own network.
-- Use `batch()` (reactive or scoped) to avoid redundant recomputation when multiple values change.
+- Reactive primitives use a shared internal Annette network; call `initReactiveSystem(network)` to scope them to your own network.
+- `batch()` from the reactive agent API batches reactive updates; `createNetwork().batch` batches network steps.
+- Use `batch()` to avoid redundant recomputation when multiple values change.
+
+#### Solid-style signals
+
+Signal helpers live in the Solid-style reactive module.
 
 #### `createSignal(initialValue)`
 
@@ -1068,71 +1080,17 @@ Creates a memoized derived signal.
 function createMemo<T>(computation: () => T): () => T;
 ```
 
-#### `createReactive(initialValue)`
-
-Creates a reactive value.
-
-```typescript
-function createReactive<T>(initialValue: T): Reactive<T>;
-```
-
-**Parameters:**
-- `initialValue`: Initial value
-
-**Returns:** A reactive value function
-
-**Example:**
-```typescript
-// Create a reactive value
-const count = createReactive(0);
-
-// Get the current value
-console.log(count()); // 0
-
-// Set a new value
-count(1);
-```
-
-#### `createComputed(computation)`
-
-Creates a computed value that depends on other reactive values.
-
-```typescript
-function createComputed<T>(computation: () => T): Reactive<T>;
-```
-
-**Parameters:**
-- `computation`: Function that computes the value
-
-**Returns:** A reactive value function
-
-**Example:**
-```typescript
-// Create a computed value
-const doubled = createComputed(() => count() * 2);
-
-// Get the computed value
-console.log(doubled()); // 2 (if count is 1)
-```
-
 #### `createEffect(effect)`
 
-Creates an effect that runs when its dependencies change.
+Creates a signal-based side effect.
 
 ```typescript
 function createEffect(effect: () => void): void;
 ```
 
-**Parameters:**
-- `effect`: Function to run when dependencies change
+**Gotchas:**
+- Signal batching is exported as `solidBatch` to avoid clashing with network `batch()`.
 
-**Example:**
-```typescript
-// Create an effect
-createEffect(() => {
-  console.log(`The count is ${count()}, doubled is ${doubled()}`);
-});
-```
 
 ### Plugin System
 
@@ -1231,6 +1189,14 @@ network.registerPlugin(reactivityPlugin);
 
 The Application Layer provides domain-specific components and high-level APIs.
 
+#### Module Map
+
+These APIs ship in one package, but map to distinct domains:
+- `@annette/scope`: scoped networks, rule DSL, storylines
+- `@annette/sync`: sync operations, distributed helpers, vector clocks
+- `@annette/reactive`: signals, memos, fine-grained reactivity
+- `@annette/ui` (experimental): component model + DOM renderer
+
 ### Scoped Network API
 
 The scoped API creates a bound set of helpers for a single network instance. Use it to avoid passing the network around and to define typed factories plus methods in one place.
@@ -1247,7 +1213,7 @@ function createNetwork(name: string): {
   Port: PortFactory;
   Rule: RuleFactory;
   Connection: ConnectionFactory;
-  withConnections(factory, methods, options?): void;
+  withConnections(factory, methods, options?): AgentFactoryWithMethods;
   connect(source, destination, name?): IConnection | undefined;
   scope: {
     (cb: () => void): void;
@@ -1272,6 +1238,8 @@ function createNetwork(name: string): {
   step(): boolean;
   reduce(maxSteps?): number;
 };
+
+withConnections returns a new factory with the declared methods attached.
 
 withConnections supports options:
 
@@ -1541,16 +1509,35 @@ console.log(clone !== obj); // true
 
 ### Distributed Networks
 
-The Distributed Networks system enables communication between separate networks.
+The Distributed Networks system enables communication between separate networks using operation logs derived from change history.
 
-**Why:** Share agents across processes while preserving deterministic reduction.
+**Why:** Share agents across processes while preserving deterministic reduction where possible.
+
+**What is a SyncOperation?**
+
+```typescript
+type SyncOperation = {
+  type: 'agent-update' | 'agent-create' | 'agent-delete' | 'connection-create' | 'connection-delete' | 'snapshot';
+  data: any;
+  source: string;
+  timestamp: number;
+  version: number;
+  id: string;
+};
+```
+
+**Convergence boundaries:**
+- Operations are built from `getChangeHistory()` entries (tracked rules and updater-based changes).
+- Shared updater agents (`createSharedMap/List/Text/Counter`) are designed for convergence.
+- Arbitrary `ActionRule` side effects or non-deterministic logic can diverge across replicas.
 
 **Gotchas:**
 - Both ends must register sync rules (`registerSyncRules`) before applying operations.
 - Use consistent `sourceId` values per client to avoid replaying local operations.
-
+- If transports reorder operations, rely on vector clocks + conflict resolver to reconcile.
 
 #### `createDistributedNetworkServer(options)`
+
 
 Creates a distributed network server.
 
@@ -1719,9 +1706,14 @@ namespace conflictStrategies {
 }
 ```
 
-### Fine-grained Reactivity
+### Fine-grained Reactivity (Experimental)
 
-The Fine-grained Reactivity system tracks dependencies at the property level.
+The Fine-grained Reactivity system tracks dependencies at the property level. It is built on reactive proxies rather than interaction-net reductions.
+
+**Gotchas:**
+- Proxy-based reactivity only tracks property access/mutation on the proxy object.
+- Use this for local UI state; it does not participate in network reductions.
+
 
 #### `ReactiveProxy`
 
@@ -1828,9 +1820,14 @@ const fullName = computed(() => `${firstName} ${lastName}`);
 console.log(fullName());
 ```
 
-### Component Model
+### Component Model (Experimental)
 
-The Component Model provides a way to create reusable UI components.
+The Component Model provides a lightweight UI helper built on the fine-grained reactive store. It is not a full UI framework; the renderer targets the DOM.
+
+**Gotchas:**
+- `render` expects a browser `HTMLElement` container; it is not server-side compatible.
+- Component state is local to the reactive store and does not sync through networks.
+
 
 #### `createComponent(options)`
 
@@ -2040,11 +2037,12 @@ user = applyUpdate(user, ToggleUpdater({}, ["active"]));
 console.log(user); // { name: "Jane", age: 31, active: true }
 ```
 
-## Advanced Features
+## Advanced Features (Experimental)
 
 ### Progressive Disclosure
 
-The Progressive Disclosure APIs provide different levels of abstraction for different use cases.
+The Progressive Disclosure APIs provide different levels of abstraction for different use cases. These helpers are convenience wrappers and may change.
+
 
 #### `Simple`
 
@@ -2185,9 +2183,12 @@ const savedState = JSON.parse(localStorage.getItem("network-state"));
 DebugTools.importNetworkState(network, savedState);
 ```
 
-### Performance Optimizations
+### Performance Optimizations (Experimental)
+
+These utilities live in `src/optimization.ts` and are best-effort performance aids.
 
 #### `RuleIndex`
+
 
 Class for optimizing rule lookups.
 
@@ -2236,14 +2237,20 @@ Creates a network with performance optimizations.
 
 ```typescript
 function createOptimizedNetwork(
-  name: string,
+  network: INetwork,
   options?: {
-    useRuleIndex?: boolean;
-    useStructuralSharing?: boolean;
+    enableRuleIndexing?: boolean;
+    enableLazyEvaluation?: boolean;
+    enableStructuralSharing?: boolean;
     enableMemoryManagement?: boolean;
     enableParallelProcessing?: boolean;
+    numWorkers?: number;
+    workerScriptUrl?: string;
   }
 ): INetwork;
+
+// Convenience wrapper
+Advanced.createOptimizedNetwork(name: string, options?: AnnetteOptions): INetwork;
 ```
 
 **Parameters:**
@@ -2255,10 +2262,14 @@ function createOptimizedNetwork(
 **Example:**
 ```typescript
 // Create an optimized network
-const net = createOptimizedNetwork("high-performance", {
-  useRuleIndex: true,
-  useStructuralSharing: true,
+const net = createOptimizedNetwork(network, {
+  enableRuleIndexing: true,
+  enableStructuralSharing: true,
   enableMemoryManagement: true,
   enableParallelProcessing: false
 });
 ```
+
+**Gotchas:**
+- Parallel processing requires a worker script URL and is best-effort; it is not a deterministic reduction guarantee.
+- These optimizations are optional; validate performance impact for your workload.
