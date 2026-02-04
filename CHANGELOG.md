@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.2](https://github.com/doeixd/annette/compare/v0.0.1...v0.0.2) (2026-02-04)
+
+
+### Features
+
+* add scoped batch/untrack helpers ([f57aac6](https://github.com/doeixd/annette/commit/f57aac69655a9f862a5a4327ca380c0c613caeb6))
+
+
+### Bug Fixes
+
+* resolve typecheck blockers ([e198279](https://github.com/doeixd/annette/commit/e198279f62d319b3b7122257dcfcb2b753076b12))
+
 ### 0.0.1 (2026-02-04)
 
 
