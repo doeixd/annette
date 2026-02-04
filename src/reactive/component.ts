@@ -126,11 +126,13 @@ export function createComponent<P extends object, S>(
     props,
     
     emit: (event, ...args) => {
-      const handler = props[`on${event.charAt(0).toUpperCase() + event.slice(1)}`];
+      const handlers = props as Record<string, unknown>;
+      const handler = handlers[`on${event.charAt(0).toUpperCase() + event.slice(1)}`];
       if (typeof handler === 'function') {
         handler(...args);
       }
     },
+
     
     onCleanup: (fn) => {
       instance.cleanup.push(fn);

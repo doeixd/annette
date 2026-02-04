@@ -6,7 +6,8 @@
  */
 import { Agent, IAgent } from '../agent';
 import { Port } from '../port';
-import { Updater, UpdaterValue, UpdateOperation } from '../updater';
+import { Updater, UpdaterValue, UpdateOperation, applyUpdate as applyCoreUpdate } from '../updater';
+
 
 /**
  * Registry of custom updaters
@@ -74,18 +75,20 @@ export function defineUpdater<T>(definition: UpdaterDefinition<T>) {
     if (definition.validate && !definition.validate(operation)) {
       throw new Error(`Invalid operation for ${definition.type} updater: ${JSON.stringify(operation)}`);
     }
-    
+
+    const updateOperation: UpdateOperation = {
+      type: 'custom',
+      apply: (current) => definition.apply(current, operation)
+    };
+
     // Create an updater
     return Updater(
       parentPath,
-      { 
-        type: definition.type, 
-        data: operation,
-        metadata: { dataType: definition.type }
-      },
-      []
+      updateOperation,
+      { updaterType: definition.type, operation }
     );
   };
+
 }
 
 /**
@@ -120,16 +123,18 @@ export function createCustomUpdater<T>(
     throw new Error(`Invalid operation for ${type} updater: ${JSON.stringify(operation)}`);
   }
   
+  const updateOperation: UpdateOperation = {
+    type: 'custom',
+    apply: (current) => definition.apply(current, operation)
+  };
+
   // Create an updater
   return Updater(
     path,
-    { 
-      type, 
-      data: operation,
-      metadata: { dataType: type }
-    },
-    []
+    updateOperation,
+    { updaterType: type, operation }
   );
+
 }
 
 /**
@@ -163,25 +168,20 @@ export function composeUpdaters(...updaters: IAgent<'Updater', UpdaterValue>[]):
     }
   );
   
+  const compositeOperation: UpdateOperation = {
+    type: 'custom',
+    apply: (current) => updaters.reduce((result, updater) => applyUpdate(result, updater), current)
+  };
+
   // Return a wrapper updater
   return Updater(
     [],
-    { 
-      type: 'composite', 
-      data: {
-        updaters: updaters.map(u => ({
-          type: u.value.type,
-          data: u.value.data,
-          path: u.value.path
-        }))
-      },
-      metadata: { 
-        dataType: 'composite',
-        compositeUpdater: compositeUpdater._agentId
-      }
-    },
-    []
+    compositeOperation,
+    {
+      compositeUpdater: compositeUpdater._agentId
+    }
   );
+
 }
 
 /**
@@ -191,30 +191,9 @@ export function composeUpdaters(...updaters: IAgent<'Updater', UpdaterValue>[]):
  * @returns Updated value
  */
 export function applyComposedUpdate<T>(value: T, updater: IAgent<'Updater', UpdaterValue>): T {
-  // Check if this is a composite updater
-  if (updater.value.type === 'composite' && updater.value.metadata?.compositeUpdater) {
-    const compositeUpdaterId = updater.value.metadata.compositeUpdater;
-    
-    // TODO: Look up the composite updater and apply its updaters in sequence
-    // This would require access to the network
-    
-    // For now, just apply the updaters sequentially based on the data
-    const updaters = updater.value.data.updaters;
-    
-    return updaters.reduce((result, updaterData) => {
-      const singleUpdater = createCustomUpdater(
-        updaterData.type,
-        updaterData.data,
-        updaterData.path
-      );
-      
-      return applyUpdate(result, singleUpdater);
-    }, value);
-  }
-  
-  // For regular updaters, apply normally
   return applyUpdate(value, updater);
 }
+
 
 /**
  * Apply an updater to a value
@@ -223,43 +202,9 @@ export function applyComposedUpdate<T>(value: T, updater: IAgent<'Updater', Upda
  * @returns Updated value
  */
 export function applyUpdate<T>(value: T, updater: IAgent<'Updater', UpdaterValue>): T {
-  // Get the updater definition
-  const definition = registeredUpdaters.get(updater.value.type);
-  
-  if (!definition) {
-    throw new Error(`Updater type "${updater.value.type}" is not registered`);
-  }
-  
-  // Extract path and operation
-  const path = updater.value.path || [];
-  const operation = updater.value.data;
-  
-  // If no path, apply directly
-  if (path.length === 0) {
-    return definition.apply(value, operation);
-  }
-  
-  // Apply to nested path
-  const result = JSON.parse(JSON.stringify(value)); // Deep clone
-  let current = result;
-  
-  // Navigate to the target object
-  for (let i = 0; i < path.length - 1; i++) {
-    const key = path[i];
-    
-    if (current[key] === undefined) {
-      current[key] = {};
-    }
-    
-    current = current[key];
-  }
-  
-  // Apply the update
-  const lastKey = path[path.length - 1];
-  current[lastKey] = definition.apply(current[lastKey], operation);
-  
-  return result;
+  return applyCoreUpdate(value, updater.value.targetPath, updater.value.operation);
 }
+
 
 // ========== Standard Updater Definitions ==========
 

@@ -9,19 +9,9 @@ import { AnyRule } from './rule';
 import { isAgent } from './agent';
 import { produce } from 'immer';
 
-// Type declarations for environments that might not have Worker
-declare global {
-  var Worker: {
-    new (url: string): {
-      postMessage(data: any): void;
-      onmessage: ((event: { data: any }) => void) | null;
-      terminate(): void;
-    };
-  } | undefined;
-  var navigator: {
-    hardwareConcurrency?: number;
-  } | undefined;
-}
+const globalWorker = (globalThis as { Worker?: typeof Worker }).Worker;
+const globalNavigator = (globalThis as { navigator?: Navigator }).navigator;
+
 
 // Extended network interface for optimization features
 interface OptimizedNetwork extends INetwork {
@@ -676,15 +666,15 @@ export class ParallelProcessing {
   private initialize(numWorkers: number): void {
     if (this.isInitialized) return;
     
-    if (typeof Worker === 'undefined') {
+    if (!globalWorker) {
       console.warn('Web Workers are not supported in this environment. Parallel processing disabled.');
       return;
     }
-    
-    // Create workers
+
     for (let i = 0; i < numWorkers; i++) {
       try {
-        const worker = new Worker(this.workerScriptUrl);
+        const worker = new globalWorker(this.workerScriptUrl);
+
         
         // Set up message handler
         worker.onmessage = (event: any) => {
@@ -898,7 +888,8 @@ export const DEFAULT_OPTIONS: AnnetteOptions = {
     enableObjectPooling: true,
     maxPoolSize: 100
   },
-  numWorkers: (typeof navigator !== 'undefined') ? navigator.hardwareConcurrency || 4 : 4,
+  numWorkers: globalNavigator?.hardwareConcurrency || 4,
+
   workerScriptUrl: ''
 };
 

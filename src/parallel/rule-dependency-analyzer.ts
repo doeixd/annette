@@ -113,7 +113,10 @@ export class AdvancedRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
       // Limit cache size
       if (this.analysisCache.size > 100) {
         const oldestKey = this.analysisCache.keys().next().value;
-        this.analysisCache.delete(oldestKey);
+        if (oldestKey) {
+          this.analysisCache.delete(oldestKey);
+        }
+
       }
     }
     
@@ -308,9 +311,12 @@ export class AdvancedRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
       // If we couldn't find any non-conflicting nodes, take the first one
       if (currentGroup.size === 0 && remainingNodes.size > 0) {
         const firstNode = remainingNodes.values().next().value;
-        currentGroup.add(firstNode);
-        currentRules.push(this.serializeRule(firstNode.rule));
+        if (firstNode) {
+          currentGroup.add(firstNode);
+          currentRules.push(this.serializeRule(firstNode.rule));
+        }
       }
+
       
       // Remove the nodes we've processed
       for (const node of currentGroup) {
@@ -383,12 +389,20 @@ export class AdvancedRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
     
     if (rule.type === 'action' || rule.type === 'rewrite') {
       // New rule format
-      const agent1Id = rule.matchInfo.agent1Id || rule.agent1Id;
-      const agent2Id = rule.matchInfo.agent2Id || rule.agent2Id;
-      
+      const matchInfo = rule.matchInfo as {
+        agent1Id?: string;
+        agent2Id?: string;
+        agentName1?: string;
+        agentName2?: string;
+      };
+
+      const agent1Id = matchInfo.agent1Id ?? matchInfo.agentName1;
+      const agent2Id = matchInfo.agent2Id ?? matchInfo.agentName2;
+
       if (agent1Id) agentIds.push(agent1Id);
       if (agent2Id) agentIds.push(agent2Id);
     } else {
+
       // Legacy rule format
       const conn = (rule as any).connection;
       if (conn) {
@@ -408,17 +422,29 @@ export class AdvancedRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
    */
   private serializeRule(rule: AnyRule): any {
     if (rule.type === 'action' || rule.type === 'rewrite') {
+      const matchInfo = rule.matchInfo as {
+        agent1Id?: string;
+        agent2Id?: string;
+        agentName1?: string;
+        agentName2?: string;
+        port1Id?: string;
+        port2Id?: string;
+        portName1?: string;
+        portName2?: string;
+      };
+
       return {
         ruleId: uuidv4(),
         ruleName: rule.name,
         ruleType: rule.type,
-        agentId1: rule.matchInfo.agent1Id || rule.agent1Id,
-        agentId2: rule.matchInfo.agent2Id || rule.agent2Id,
-        port1Id: rule.matchInfo.port1Id || rule.port1Id,
-        port2Id: rule.matchInfo.port2Id || rule.port2Id,
+        agentId1: matchInfo.agent1Id ?? matchInfo.agentName1,
+        agentId2: matchInfo.agent2Id ?? matchInfo.agentName2,
+        port1Id: matchInfo.port1Id ?? matchInfo.portName1,
+        port2Id: matchInfo.port2Id ?? matchInfo.portName2,
         ruleDefinition: rule.type === 'action' ? rule.action : rule.rewrite
       };
     } else {
+
       // Legacy rule format
       return {
         ruleId: uuidv4(),

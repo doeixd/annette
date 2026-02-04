@@ -114,11 +114,12 @@ export class ReactiveProxy {
         this.trackDependency(fullPath);
         
         const value = target[prop as keyof T];
-        
+
         // If value is an object, return a proxied version
-        if (typeof value === 'object' && value !== null && !value.__isReactive) {
+        if (typeof value === 'object' && value !== null && !(value as { __isReactive?: boolean }).__isReactive) {
           return this.createProxy(value, fullPath);
         }
+
         
         return value;
       },
@@ -273,8 +274,9 @@ export class ReactiveProxy {
     
     const parentValue = this.objectMap.get(parentPath);
     if (parentValue) {
-      parentValue[key] = value;
+      (parentValue as Record<string, unknown>)[key] = value;
     }
+
   }
   
   /**

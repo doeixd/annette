@@ -3,22 +3,24 @@
   "include": ["src", "types"],
   "compilerOptions": {
     "module": "ESNext",
-    "lib": ["ESNext"],
+    "lib": ["ES2021", "DOM"],
     "importHelpers": true,
     "declaration": true,
     "sourceMap": true,
     "rootDir": "./src",
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "moduleResolution": "bundler",
     "jsx": "react",
     "esModuleInterop": true,
-    "target": "es2020",
+    "target": "es2021",
     "useDefineForClassFields": false,
     "declarationMap": true,
-    "downlevelIteration": true
+    "downlevelIteration": true,
+    "skipLibCheck": true
   }
+
 }

@@ -5,11 +5,12 @@
  * rule execution across multiple web workers for improved performance.
  */
 
-import { IAgent } from '../agent';
+import { Agent, IAgent } from '../agent';
 import { IConnection } from '../connection';
 import { INetwork, Network } from '../network';
 import { AnyRule } from '../rule';
-import { IBoundPort } from '../port';
+import { IBoundPort, Port } from '../port';
+
 import { 
   ExecutionResult, 
   RuleSet, 
@@ -85,11 +86,13 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
         // New rule format
         agent1Id = rule.matchInfo.agentName1;
         agent2Id = rule.matchInfo.agentName2;
-      } else if ('connection' in rule) {
+      } else {
         // Legacy rule format
-        agent1Id = rule.connection.source._agentId;
-        agent2Id = rule.connection.destination._agentId;
+        const legacyRule = rule as { connection?: { source?: IAgent; destination?: IAgent } };
+        agent1Id = legacyRule.connection?.source?._agentId;
+        agent2Id = legacyRule.connection?.destination?._agentId;
       }
+
       
       if (!agent1Id || !agent2Id) continue;
       
@@ -138,11 +141,13 @@ export class DefaultRuleDependencyAnalyzer implements RuleDependencyAnalyzer {
           // New rule format
           agent1Id = rule.matchInfo.agentName1;
           agent2Id = rule.matchInfo.agentName2;
-        } else if ('connection' in rule) {
+        } else {
           // Legacy rule format
-          agent1Id = rule.connection.source._agentId;
-          agent2Id = rule.connection.destination._agentId;
+          const legacyRule = rule as { connection?: { source?: IAgent; destination?: IAgent } };
+          agent1Id = legacyRule.connection?.source?._agentId;
+          agent2Id = legacyRule.connection?.destination?._agentId;
         }
+
         
         if (!agent1Id || !agent2Id) continue;
         
@@ -266,12 +271,13 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
    */
   constructor(options: ParallelNetworkOptions = {}) {
     this.options = {
-      baseNetwork: new Network(),
+      baseNetwork: options.baseNetwork ?? Network('parallel'),
       analyzeRuleDependencies: true,
       minBatchSize: 10,
       maxBatchWaitTime: 100,
       ...options
     };
+
     
     this.baseNetwork = this.options.baseNetwork! as unknown as INetwork<Name, A>;
     this.workerPool = new WorkerPool(options);
@@ -409,7 +415,8 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
     }
     
     // Get the applicable rules
-    const rules = this.baseNetwork.getApplicableRules();
+    const rules = this.baseNetwork.getAllRules();
+
     
     if (rules.length === 0) {
       return false;
@@ -499,18 +506,22 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
     
     // Add new agents
     for (const agentData of result.newAgents) {
-      // Create the agent
-      const agent = this.baseNetwork.createAgent(
-        agentData.name,
-        agentData.value
+      const ports = Object.fromEntries(
+        Object.entries(agentData.ports).map(([key, port]) => [
+          key,
+          Port(port.name, port.type as any)
+        ])
       );
-      
+
+      const agent = Agent(agentData.name as any, agentData.value, ports, agentData.type);
+
       // Set the agent ID
       (agent as any)._agentId = agentData.id;
-      
+
       // Add to the network
       this.baseNetwork.addAgent(agent);
     }
+
     
     // Remove agents
     for (const agentId of result.removedAgentIds) {
@@ -521,35 +532,41 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
     for (const connData of result.newConnections) {
       const sourceAgent = this.baseNetwork.getAgent(connData.sourceAgentId);
       const destAgent = this.baseNetwork.getAgent(connData.destinationAgentId);
-      
+
       if (sourceAgent && destAgent) {
-        this.baseNetwork.connect(
-          sourceAgent,
-          connData.sourcePortName,
-          destAgent,
-          connData.destinationPortName
-        );
+        const sourcePort = sourceAgent.ports[connData.sourcePortName];
+        const destPort = destAgent.ports[connData.destinationPortName];
+
+        if (sourcePort && destPort) {
+          this.baseNetwork.connectPorts(sourcePort, destPort);
+        }
       }
     }
-    
+
     // Remove connections
     for (const connData of result.removedConnections) {
       const sourceAgent = this.baseNetwork.getAgent(connData.sourceAgentId);
       const destAgent = this.baseNetwork.getAgent(connData.destinationAgentId);
-      
+
       if (sourceAgent && destAgent) {
-        const connection = this.baseNetwork.getConnection(
-          sourceAgent,
-          connData.sourcePortName,
-          destAgent,
-          connData.destinationPortName
-        );
-        
-        if (connection) {
-          this.baseNetwork.disconnect(connection);
+        const sourcePort = sourceAgent.ports[connData.sourcePortName];
+        const destPort = destAgent.ports[connData.destinationPortName];
+
+        if (sourcePort && destPort) {
+          const connections = this.baseNetwork.findConnections({ from: sourcePort }).concat(
+            this.baseNetwork.findConnections({ to: sourcePort })
+          );
+
+          for (const connection of connections) {
+            const otherPort = connection.sourcePort === sourcePort ? connection.destinationPort : connection.sourcePort;
+            if (otherPort === destPort) {
+              this.baseNetwork.disconnectPorts(sourcePort, destPort);
+            }
+          }
         }
       }
     }
+
     
     return result.steps;
   }
@@ -628,33 +645,34 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
    * @returns Array of agents
    */
   getAgents(): IAgent[] {
-    return this.baseNetwork.getAgents();
+    return this.baseNetwork.getAllAgents();
   }
+
   
   /**
    * Get all connections in the network
    * @returns Array of connections
    */
   getConnections(): IConnection[] {
-    return this.baseNetwork.getConnections();
+    return this.baseNetwork.getAllConnections();
   }
-  
+
   /**
    * Get all rules in the network
    * @returns Array of rules
    */
   getRules(): AnyRule[] {
-    return this.baseNetwork.getRules();
+    return this.baseNetwork.getAllRules();
   }
-  
+
   /**
    * Get the applicable rules in the network
    * @returns Array of applicable rules
    */
   getApplicableRules(): AnyRule[] {
-    return this.baseNetwork.getApplicableRules();
+    return this.baseNetwork.getAllRules();
   }
-  
+
   /**
    * Create an agent with the given name and value
    * @param name The agent name
@@ -662,9 +680,9 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
    * @returns The created agent
    */
   createAgent(name: string, value: any): IAgent {
-    return this.baseNetwork.createAgent(name, value);
+    return Agent(name as any, value);
   }
-  
+
   /**
    * Get a connection between two agents
    * @param agent1 The first agent
@@ -674,8 +692,21 @@ export class ParallelNetwork<Name extends string = string, A extends IAgent = IA
    * @returns The connection or undefined
    */
   getConnection(agent1: IAgent, port1: string, agent2: IAgent, port2: string): IConnection | undefined {
-    return this.baseNetwork.getConnection(agent1, port1, agent2, port2);
+    const portA = agent1.ports[port1];
+    const portB = agent2.ports[port2];
+
+    if (!portA || !portB) {
+      return undefined;
+    }
+
+    const connections = this.baseNetwork.findConnections({ from: portA }).concat(
+      this.baseNetwork.findConnections({ to: portA })
+    );
+
+    return connections.find((connection) => connection.sourcePort === portA && connection.destinationPort === portB)
+      ?? connections.find((connection) => connection.sourcePort === portB && connection.destinationPort === portA);
   }
+
   
   /**
    * Find agents matching the given criteria
