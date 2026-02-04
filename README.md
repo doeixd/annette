@@ -833,129 +833,16 @@ console.log(deserialized.self === deserialized); // true
 
 ## API Reference
 
-### Core Engine
+For the full API (types, examples, and module breakdowns), see the standalone docs:
 
-The core engine provides the fundamental interaction net primitives:
+- [API Documentation](./api-documentation.md)
 
-```typescript
-import { Core } from 'annette';
+Quick pointers:
+- Core primitives: `Agent`, `Network`, `ActionRule`, `RewriteRule`, `Connection`
+- Scoped helpers: `createNetwork`, `scope`, `batch`, `untrack`, `storyline`
+- Reactive APIs: `createReactive`, `createComputed`, `createSignal`, `createEffect`
+- Serialization: `serializeValue`, `deserializeValue`, `deepClone`
 
-// Create agents
-const counter = Core.createAgent('Counter', 0);
-const incrementer = Core.createAgent('Incrementer', 1);
-
-// Create ports
-const mainPort = Core.createPort('main', 'main');
-const auxPort = Core.createPort('output', 'aux');
-
-// Create connections
-const connection = Core.createConnection(counter.ports.main, incrementer.ports.main);
-
-// Create rules
-const incrementRule = Core.createActionRule(
-  counter.ports.main,
-  incrementer.ports.main,
-  (counter, incrementer) => {
-    counter.value += incrementer.value;
-    return [counter, incrementer];
-  }
-);
-
-// Create networks
-const network = Core.createNetwork('my-app');
-```
-
-### Standard Library
-
-The standard library provides higher-level utilities and patterns:
-
-```typescript
-import { StdLib } from 'annette';
-
-// Time travel networks
-const timeTravelNet = StdLib.createEnhancedNetwork('time-travel-app');
-
-// Reactive programming
-const count = StdLib.Reactive.createReactive(0);
-const doubled = StdLib.Reactive.createComputed(() => count() * 2);
-
-// Specialized data structures
-const sharedMap = StdLib.DataStructures.createSharedMap();
-const sharedCounter = StdLib.DataStructures.createSharedCounter();
-
-// Effects and handlers
-const fetchEffect = StdLib.Effect.EffectAgent({
-  type: 'fetch',
-  url: 'https://api.example.com/data'
-});
-```
-
-### Application Layer
-
-The application layer provides high-level APIs for common use cases:
-
-```typescript
-import {
-  Agent, Network, ActionRule, // Core
-  TimeTravelNetwork,           // Time travel
-  createReactive,              // Reactive programming
-  serializeValue,              // Serialization
-} from 'annette';
-
-// All exports are available at the top level for convenience
-```
-
-### Key Classes and Functions
-
-#### Core Classes
-
-- **`Agent(name, value, ports?, type?)`**: Creates an agent
-- **`Network(name, agents?)`**: Creates a network
-- **`ActionRule(port1, port2, action, name?)`**: Creates an action rule
-- **`RewriteRule(port1, port2, rewrite, name?)`**: Creates a rewrite rule
-- **`Connection(port1, port2, name?)`**: Creates a connection
-
-#### Standard Library Classes
-
-- **`TimeTravelNetwork(name, agents?)`**: Network with time travel
-- **`createReactive(initialValue)`**: Creates a reactive value
-- **`createComputed(computation)`**: Creates a computed value
-- **`createEffect(effect)`**: Creates a side effect
-
-#### Utility Functions
-
-- **`serializeValue(value, options?)`**: Serialize with circular reference support
-- **`deserializeValue(serialized, options?)`**: Deserialize values
-- **`createPluginNetwork(plugins, name)`**: Create a plugin-enabled network
-
-### Type Definitions
-
-The library provides comprehensive TypeScript types:
-
-```typescript
-// Agent types
-interface IAgent<Name extends string = string, Value = any, Type extends string = string> {
-  name: Name;
-  value: Value;
-  ports: BoundPortsMap<IAgent<Name, Value, Type>>;
-  type: Type;
-  _agentId: AgentId;
-}
-
-// Network types
-interface INetwork<Name extends string = string, A extends IAgent = IAgent> {
-  name: Name;
-  addAgent(agent: A): A;
-  removeAgent(agent: A | string): boolean;
-  getAgent(id: string): A | undefined;
-  getAllAgents(): A[];
-  connectPorts(port1: IBoundPort, port2: IBoundPort): IConnection;
-  addRule(rule: AnyRule): void;
-  removeRule(rule: AnyRule | string): boolean;
-  step(): Promise<boolean>;
-  reduce(maxSteps?: number): Promise<number>;
-}
-```
 
 ## The Network is a CRDT
 

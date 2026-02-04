@@ -22,9 +22,11 @@ This document provides detailed information about the Annette API, organized by 
 - [Application Layer](#application-layer)
   - [Scoped Network API](#scoped-network-api)
   - [Rule DSL](#rule-dsl)
+  - [Storylines](#storylines)
   - [Serialization](#serialization)
 
   - [Distributed Networks](#distributed-networks)
+
   - [Vector Clocks](#vector-clocks)
   - [Conflict Resolution](#conflict-resolution)
   - [Fine-grained Reactivity](#fine-grained-reactivity)
@@ -36,7 +38,20 @@ This document provides detailed information about the Annette API, organized by 
   - [Debugging Tools](#debugging-tools)
   - [Performance Optimizations](#performance-optimizations)
 
+## Conventions
+
+Annette APIs are organized by layer (core → standard library → application). Most examples assume:
+
+- **Agents** are mutable objects; rules mutate agent `value` in-place.
+- **Ports** have a `main` role (primary interaction) and optional `aux` roles (secondary links).
+- **Factories** capture an agent name and port schema; use them for typed creation.
+
+**Gotchas:**
+- Methods declared with `withConnections` create network work; calling them outside a scope can step immediately.
+- Connecting the same `main` port twice throws unless `autoDisconnectMain` is enabled.
+
 ## Core Engine Layer
+
 
 The Core Engine layer provides the fundamental interaction net primitives.
 
@@ -86,14 +101,15 @@ const processor = Agent("Processor", { status: "idle" }, {
   control: Port("control", "aux")
 });
 
-// Factory helper
-const CounterFactory = Agent.factory<"Counter", number>("Counter");
+// Factory helper (name inferred from string literal)
+const CounterFactory = Agent.factory<number>("Counter");
 const instance = CounterFactory(0);
 
 // Factory from existing agent
 const cloneFactory = Agent.factoryFrom(instance);
 const clone = cloneFactory(1);
 ```
+
 
 
 #### `IAgent<N, V, T>`
@@ -406,39 +422,54 @@ const net = Network("counter-example");
 const net2 = Network("pre-populated", [agent1, agent2, agent3]);
 ```
 
+**Gotchas:**
+- `connectPorts` throws if either port is already connected.
+- `step()` returns `false` when no rules apply; `reduce()` returns the count of applied steps.
+
+
 #### `INetwork`
 
 Interface representing a network.
 
 ```typescript
-interface INetwork {
+interface INetwork<Name extends string = string, A extends IAgent = IAgent> {
+  readonly name: Name;
   readonly id: string;
-  readonly name: string;
-  
+
   // Agent management
-  addAgent(agent: IAgent): void;
-  removeAgent(agent: IAgent): void;
-  getAgents(): IAgent[];
-  findAgents(query: { name?: string, type?: string }): IAgent[];
-  
+  addAgent<T extends A | IAgent>(agent: T): T;
+  removeAgent(agentOrId: A | string): boolean;
+  getAgent<T extends A | IAgent>(agentId: string): T | undefined;
+  findAgents(query: { name?: string }): IAgent[];
+  getAllAgents(): IAgent[];
+
   // Connection management
-  connectPorts(port1: IBoundPort, port2: IBoundPort, name?: string): IConnection;
-  disconnectPorts(port1: IBoundPort, port2: IBoundPort): void;
-  getConnections(): IConnection[];
-  
+  connectPorts<P1 extends IBoundPort, P2 extends IBoundPort>(
+    port1: P1,
+    port2: P2,
+    connectionName?: string
+  ): IConnection | undefined;
+  disconnectPorts<P1 extends IBoundPort, P2 extends IBoundPort>(port1: P1, port2: P2): boolean;
+  isPortConnected<P extends IBoundPort>(port: P): boolean;
+  getAllConnections(): IConnection[];
+  findConnections(query?: { from?: IBoundPort; to?: IBoundPort }): IConnection[];
+
   // Rule management
-  addRule(rule: IRule): void;
-  removeRule(rule: IRule): void;
-  getRules(): IRule[];
-  
+  addRule(rule: AnyRule): void;
+  removeRule(rule: AnyRule | string): boolean;
+  getAllRules(): AnyRule[];
+  findRules(query?: { name?: string; type?: string; agentName?: string; portName?: string }): AnyRule[];
+  clearRules(): void;
+
   // Execution
-  step(): number;
+  step(): boolean;
   reduce(maxSteps?: number): number;
-  
+
   // Change tracking
-  getChangeHistory(): ChangeHistoryEntry[];
+  getChangeHistory?: () => ChangeHistoryEntry[];
 }
 ```
+
 
 ## Standard Library Layer
 
@@ -960,7 +991,82 @@ registerSpecializedUpdaterRules(network);
 
 ### Reactive System
 
-The Reactive system provides automatic dependency tracking.
+The Reactive system provides automatic dependency tracking for reactive values and derived computations. All primitives share a reactive network (created on first use), or you can initialize one explicitly.
+
+#### `createReactive(initialValue)`
+
+Creates a reactive value.
+
+```typescript
+function createReactive<T>(initialValue: T): Reactive<T>;
+```
+
+**Parameters:**
+- `initialValue`: The initial value
+
+**Returns:** A reactive accessor
+
+**Example:**
+```typescript
+const count = createReactive(0);
+const doubled = createComputed(() => count() * 2);
+
+createEffect(() => {
+  console.log(count(), doubled());
+});
+
+count(1);
+```
+
+#### `createComputed(computation)`
+
+Creates a computed reactive value.
+
+```typescript
+function createComputed<T>(computation: () => T): Reactive<T>;
+```
+
+**Parameters:**
+- `computation`: Function to compute the value
+
+**Returns:** A derived reactive accessor
+
+#### `createEffect(effect)`
+
+Creates a reactive side effect.
+
+```typescript
+function createEffect(effect: () => void): void;
+```
+
+**Parameters:**
+- `effect`: Function to run when dependencies change
+
+**Gotchas:**
+- Reactive primitives use a shared network; call `initReactiveSystem(network)` to scope them to your own network.
+- Use `batch()` (reactive or scoped) to avoid redundant recomputation when multiple values change.
+
+#### `createSignal(initialValue)`
+
+Creates a SolidJS-style signal pair.
+
+```typescript
+function createSignal<T>(initialValue: T): [() => T, (value: T | ((prev: T) => T)) => T];
+```
+
+**Example:**
+```typescript
+const [count, setCount] = createSignal(0);
+setCount((prev) => prev + 1);
+```
+
+#### `createMemo(computation)`
+
+Creates a memoized derived signal.
+
+```typescript
+function createMemo<T>(computation: () => T): () => T;
+```
 
 #### `createReactive(initialValue)`
 
@@ -1127,7 +1233,9 @@ The Application Layer provides domain-specific components and high-level APIs.
 
 ### Scoped Network API
 
-The scoped API creates a bound set of helpers for a single network instance.
+The scoped API creates a bound set of helpers for a single network instance. Use it to avoid passing the network around and to define typed factories plus methods in one place.
+
+**Why:** Scopes batch network changes and give you deterministic stepping points for method calls.
 
 #### `createNetwork(name)`
 
@@ -1147,8 +1255,18 @@ function createNetwork(name: string): {
     reduce(cb: () => void): void;
     manual<T>(cb: (net) => T): T;
   };
+  batch: {
+    (cb: () => void): void;
+    step(cb: () => void): void;
+    reduce(cb: () => void): void;
+    manual<T>(cb: (net) => T): T;
+  };
+  untrack: {
+    (cb: () => void): void;
+    manual<T>(cb: (net) => T): T;
+  };
   derived(factory, compute): (source) => IAgent;
-  storyline(factory, generator): StorylineDefinition;
+  storyline(factory, generator): StorylineDefinition & { deserialize: StorylineDeserialize };
   sync(agent, transport, options?): { stop(): void };
   fnAgent(subject, name, handler): AgentFactory;
   step(): boolean;
@@ -1165,6 +1283,8 @@ withConnections(Counter, {
 }, { autoDisconnectMain: true });
 ```
 
+**Why:** With `autoDisconnectMain`, you can call methods multiple times without manually disconnecting ports.
+
 You can also wrap a scoped network for nested usage:
 
 ```typescript
@@ -1179,28 +1299,64 @@ Rule listings include symmetric rules by default. Use:
 ```typescript
 rules.list({ includeSymmetric: false });
 ```
-```
+
+Scope helpers:
+- `scope.step()` runs one reduction after the callback.
+- `scope.reduce()` runs reductions until quiescent.
+- `scope.manual()` disables auto-stepping and returns the callback value.
+
+Batch helpers:
+- `batch()` queues work and runs a single step.
+- `batch.reduce()` queues work and reduces until quiescent.
+- `batch.manual()` queues work without auto-stepping.
+
+`untrack()` runs without registering agents, connections, or rules.
+
+**Gotchas:**
+- `scope.manual()` and `batch.manual()` disable auto-stepping; you must call `step()` or `reduce()` yourself.
+- Without `{ autoDisconnectMain: true }`, repeated method calls on the same agent can throw if the `main` port is still connected.
+- Inside `untrack()`, methods are no-ops and agents are not added to the network.
 
 **Example:**
 ```typescript
-const { Agent, withConnections, scope } = createNetwork('app');
+const { Agent, withConnections, scope, batch, untrack } = createNetwork('app');
 
-const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+const Counter = withConnections(Agent.factory<number>('Counter'), {
   add: (counter) => {
     counter.value += 1;
   }
-});
+}, { autoDisconnectMain: true });
 
 scope.reduce(() => {
   const counter = Counter(0);
   counter.add();
   counter.add();
 });
+
+batch(() => {
+  const counter = Counter(0);
+  counter.add();
+  counter.add();
+});
+
+untrack(() => {
+  Counter(1); // not added to the network
+});
 ```
 
 ### Rule DSL
 
-The rule DSL provides a fluent API for pair interactions.
+The rule DSL provides a fluent API for pair interactions and handler wrappers.
+
+Rule chains support:
+- `.on(leftPort, rightPort)` to target specific ports
+- `.where(guard)` to filter matches
+- `.consume()`, `.spawn()`, `.transform()`, `.mutate()` to define outcomes
+
+**Gotchas:**
+- Port names in `.on()` must exist on both agents or rule registration throws.
+- `rules.list()` includes symmetric rules by default; pass `{ includeSymmetric: false }` to hide mirror rules.
+- `consume()` defaults to consuming the right side unless you specify a side.
 
 ```typescript
 import { createNetwork, consume, pair } from 'annette';
@@ -1229,10 +1385,55 @@ withConnections(Counter, {
 });
 ```
 
+#### `consume(handler | side, handler?)`
+
+Wraps a rule handler to consume the left/right agent (or both). Useful for `fnAgent()` and `withConnections()`.
+
+```typescript
+const FnIncrementer = fnAgent(Counter, 'FnIncrementer', consume((counter, incrementer) => {
+  counter.value += incrementer.value;
+}));
+```
+
+### Storylines
+
+Storylines record method calls on scoped agents and can be serialized/replayed. Use them for time travel, demos, or deterministic replay in tests.
+
+**Gotchas:**
+- Storylines store method calls, not raw mutations; methods must exist on the factory.
+- Use `autoDisconnectMain` if your methods connect via `main` ports repeatedly.
+
+```typescript
+const { Agent, withConnections, storyline } = createNetwork('app');
+
+const Counter = withConnections(Agent.factory<number>('Counter'), {
+  add: (counter) => {
+    counter.value += 1;
+  }
+}, { autoDisconnectMain: true });
+
+const story = storyline(Counter, function* (counter) {
+  yield* counter.add();
+  yield* counter.add();
+  return counter;
+});
+
+const counter = Counter(0);
+story.apply(counter);
+
+const serialized = story.serialize({ format: 'json' });
+const replay = story.deserialize(serialized, { format: 'json' });
+replay.apply(counter);
+```
+
 ### Serialization
 
-
 The Serialization system enables storing and transmitting Annette structures.
+
+**Gotchas:**
+- Use `registerIsomorphicReference` for functions or class instances that need stable identities.
+- Choose `format: 'json'` when you need interoperability; default serialization preserves richer types.
+
 
 #### `serializeValue(value, options?)`
 
@@ -1342,6 +1543,13 @@ console.log(clone !== obj); // true
 
 The Distributed Networks system enables communication between separate networks.
 
+**Why:** Share agents across processes while preserving deterministic reduction.
+
+**Gotchas:**
+- Both ends must register sync rules (`registerSyncRules`) before applying operations.
+- Use consistent `sourceId` values per client to avoid replaying local operations.
+
+
 #### `createDistributedNetworkServer(options)`
 
 Creates a distributed network server.
@@ -1359,11 +1567,14 @@ function createDistributedNetworkServer(
 
 **Example:**
 ```typescript
-// Create a distributed network server
+// Create a network server
 const server = createDistributedNetworkServer({
   serverUrl: 'ws://localhost:3000'
 });
 ```
+
+See [examples/distributed-network-example.ts](./examples/distributed-network-example.ts) for a complete flow.
+
 
 #### `createDistributedNetworkClient(serverUrl, options?)`
 
