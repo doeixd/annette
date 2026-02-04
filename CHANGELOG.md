@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.5](https://github.com/doeixd/annette/compare/v0.0.4...v0.0.5) (2026-02-04)
+
+
+### Features
+
+* **zero:** add pipe and context wiring ([8a2801f](https://github.com/doeixd/annette/commit/8a2801f57169954b2aa5f247ff2c9441981164db))
+
 ### [0.0.4](https://github.com/doeixd/annette/compare/v0.0.3...v0.0.4) (2026-02-04)
 
 
