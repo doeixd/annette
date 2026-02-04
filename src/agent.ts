@@ -109,7 +109,69 @@ export function Agent<Name extends string, Value = any, Type extends string = st
   return agent;
 }
 
+export type AgentFactory<Name extends string = string, Value = any, Type extends string = string, P extends PortArray | PortsDefObj | PortsMap = PortArray | PortsDefObj | PortsMap> =
+  ((value: Value, portsOverride?: P) => IAgent<Name, Value, Type, P>) & {
+    __agentName: Name;
+    __ports?: P;
+    __type?: Type;
+  };
+
+export type AgentFactoryOptions<P extends PortArray | PortsDefObj | PortsMap, Type extends string = string> = {
+  ports?: P;
+  type?: Type;
+};
+
+const normalizeFactoryOptions = <P extends PortArray | PortsDefObj | PortsMap, Type extends string>(
+  portsOrOptions?: P | AgentFactoryOptions<P, Type>
+): AgentFactoryOptions<P, Type> => {
+  if (portsOrOptions && typeof portsOrOptions === 'object' && ('ports' in portsOrOptions || 'type' in portsOrOptions)) {
+    return portsOrOptions as AgentFactoryOptions<P, Type>;
+  }
+  return { ports: portsOrOptions as P | undefined };
+};
+
+export const createAgentFactory = <Name extends string, Value, Type extends string = string, P extends PortArray | PortsDefObj | PortsMap = PortArray | PortsDefObj | PortsMap>(
+  name: Name,
+  portsOrOptions?: P | AgentFactoryOptions<P, Type>
+): AgentFactory<Name, Value, Type, P> => {
+  const options = normalizeFactoryOptions<P, Type>(portsOrOptions);
+  const factory = ((value: Value, portsOverride?: P) => {
+    return Agent(name, value, portsOverride ?? options.ports, options.type);
+  }) as AgentFactory<Name, Value, Type, P>;
+
+  factory.__agentName = name;
+  factory.__ports = options.ports;
+  factory.__type = options.type;
+
+  return factory;
+};
+
+export const createAgentFactoryFrom = <TAgent extends IAgent>(agent: TAgent) => {
+  const ports = Object.fromEntries(
+    Object.entries(agent.ports).map(([portName, port]) => [
+      portName,
+      Port({ name: port.name, type: port.type })
+    ])
+  ) as PortsMap;
+
+  const factory = createAgentFactory<TAgent['name'], TAgent['value'], TAgent['type'], PortsMap>(
+    agent.name,
+    { ports, type: agent.type }
+  );
+
+  return factory;
+};
+
+export namespace Agent {
+  export let factory: typeof createAgentFactory;
+  export let factoryFrom: typeof createAgentFactoryFrom;
+}
+
+Agent.factory = createAgentFactory;
+Agent.factoryFrom = createAgentFactoryFrom;
+
 Object.defineProperty(Agent, Symbol.hasInstance, {
+
   value: function (instance: any) {
     return isAgent(instance)
   },
@@ -123,7 +185,8 @@ Object.defineProperty(Agent, Symbol.hasInstance, {
  * Note: This keeps the original dynamism and doesn't require _agentId for backward compatibility
  */
 export function isAgent(agent: any): agent is IAgent {
-  return 'name' in agent && 'value' in agent && 'ports' in agent && 'type' in agent;
+  return !!agent && typeof agent === 'object' && 'name' in agent && 'value' in agent && 'ports' in agent && 'type' in agent;
 }
+
 
 export default Agent;

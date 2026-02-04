@@ -249,3 +249,49 @@ export function Connection<
 
   throw new Error("Invalid arguments");
 }
+
+export interface ConnectionFactory {
+  <SP extends IBoundPort, DP extends IBoundPort, N extends string = string>(
+    sourcePort: SP,
+    destinationPort: DP,
+    name?: N
+  ): typeof sourcePort extends IBoundPort<infer SA, infer SN, infer ST>
+    ? typeof destinationPort extends IBoundPort<infer DA, infer DN, infer DT>
+      ? IConnection<
+          N,
+          SA,
+          DA,
+          Extract<SA["ports"][keyof SA["ports"]], IBoundPort<SA, SN>>,
+          Extract<DA["ports"][keyof DA["ports"]], IBoundPort<DA, DN>>
+        >
+      : never
+    : never;
+  <Source extends IAgent, Destination extends IAgent, Name extends string = string>(
+    source: Source,
+    destination: Destination,
+    name?: Name
+  ): IConnection<Name, Source, Destination>;
+  factory: typeof Connection;
+}
+
+export const createConnectionFactoryFrom = (connection: IConnection) => {
+  return <Source extends IAgent, Destination extends IAgent>(source: Source, destination: Destination) => {
+    const sourcePort = source.ports[connection.sourcePort.name];
+    const destinationPort = destination.ports[connection.destinationPort.name];
+
+    if (!sourcePort || !destinationPort) {
+      throw new Error('Connection factoryFrom could not resolve ports');
+    }
+
+    return Connection(sourcePort, destinationPort, connection.name);
+  };
+};
+
+export namespace Connection {
+  export let factory: typeof Connection;
+  export let factoryFrom: typeof createConnectionFactoryFrom;
+}
+
+Connection.factory = Connection;
+Connection.factoryFrom = createConnectionFactoryFrom;
+

@@ -420,15 +420,15 @@ export type UnboundPortsMap<P extends PortsMap | PortsDefObj | PortArray> =
 
 // & Array<TPorts[number] & IPort<string, PortTypes>>
 
-export function Port<
+function PortBase<
   Name extends string,
   Type extends PortTypes = "aux",
 >(port: { name: Name; type: Type }): IPort<Name, Type>;
-export function Port<Name extends string, Type extends PortTypes = "aux">(
+function PortBase<Name extends string, Type extends PortTypes = "aux">(
   name: Name,
   type: Type,
 ): IPort<Name, Type>;
-export function Port<Name extends string, Type extends PortTypes = "aux">(
+function PortBase<Name extends string, Type extends PortTypes = "aux">(
   name: Name | { name: Name; type: Type },
   type?: Type,
 ): IPort<Name, Type> {
@@ -472,7 +472,35 @@ export function Port<Name extends string, Type extends PortTypes = "aux">(
   return port;
 }
 
+export type PortFactory = typeof PortBase & {
+  factory: typeof PortBase;
+  factoryFrom: <Name extends string, Type extends PortTypes>(port: IPort<Name, Type>) => () => IPort<Name, Type>;
+  main: <Name extends string = "main">(name?: Name) => IPort<Name, "main">;
+  aux: <Name extends string = "aux">(name?: Name) => IPort<Name, "aux">;
+  wait: <Name extends string = "wait">(name?: Name) => IPort<Name, "wait">;
+  hold: <Name extends string = "hold">(name?: Name) => IPort<Name, "hold">;
+  sync: <Name extends string = "sync">(name?: Name) => IPort<Name, "sync">;
+  remote: <Name extends string = "remote">(name?: Name) => IPort<Name, "remote">;
+};
+
+export const createPortFactoryFrom = <Name extends string, Type extends PortTypes>(
+  port: IPort<Name, Type>
+) => () => PortBase(port.name, port.type);
+
+export const Port = Object.assign(PortBase, {
+  factory: PortBase,
+  factoryFrom: createPortFactoryFrom,
+  main: <Name extends string = "main">(name?: Name) => PortBase((name ?? "main") as Name, "main"),
+  aux: <Name extends string = "aux">(name?: Name) => PortBase((name ?? "aux") as Name, "aux"),
+  wait: <Name extends string = "wait">(name?: Name) => PortBase((name ?? "wait") as Name, "wait"),
+  hold: <Name extends string = "hold">(name?: Name) => PortBase((name ?? "hold") as Name, "hold"),
+  sync: <Name extends string = "sync">(name?: Name) => PortBase((name ?? "sync") as Name, "sync"),
+  remote: <Name extends string = "remote">(name?: Name) => PortBase((name ?? "remote") as Name, "remote"),
+}) as PortFactory;
+
+
 export type DefaultPorts = IPorts<IPort<string, "main">[]>;
+
 
 export type MainPortOfAgent<P extends IAgent["ports"]> = {
   [I in keyof P as P[I]["type"]]: P[I];

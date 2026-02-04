@@ -662,7 +662,59 @@ export type DeferredRewriteImplementation = DefineRewriteFn | Rewrite;
  *                  or if the implementation function expects agents with specific port structures,
  *                  but are not directly part of the final rule's `matchInfo` (which uses port names).
  * @returns An `IActionRule` or `IRewriteRule` object representing the deferred rule.
- */
+*/
+
+export const createRuleFactoryFrom = (rule: AnyRule) => {
+  if (rule.type === 'action') {
+    return createDeferredRule(
+      rule.name,
+      'action',
+      rule.action,
+      {
+        sourceAgentName: rule.matchInfo.agentName1,
+        sourceAgentPortName: rule.matchInfo.portName1,
+        destinationAgentName: rule.matchInfo.agentName2,
+        destinationAgentPortName: rule.matchInfo.portName2
+      }
+    );
+  }
+
+  if (rule.type === 'rewrite') {
+    return createDeferredRule(
+      rule.name,
+      'rewrite',
+      rule.rewrite,
+      {
+        sourceAgentName: rule.matchInfo.agentName1,
+        sourceAgentPortName: rule.matchInfo.portName1,
+        destinationAgentName: rule.matchInfo.agentName2,
+        destinationAgentPortName: rule.matchInfo.portName2
+      }
+    );
+  }
+
+  return rule;
+};
+
+export type RuleFactory = typeof Rule & {
+  action: typeof ActionRule;
+  rewrite: typeof RewriteRule;
+  tracked: typeof TrackedAction;
+  factoryFrom: typeof createRuleFactoryFrom;
+};
+
+export namespace Rule {
+  export let action: typeof ActionRule;
+  export let rewrite: typeof RewriteRule;
+  export let tracked: typeof TrackedAction;
+  export let factoryFrom: typeof createRuleFactoryFrom;
+}
+
+Rule.action = ActionRule;
+Rule.rewrite = RewriteRule;
+Rule.tracked = TrackedAction;
+Rule.factoryFrom = createRuleFactoryFrom;
+
 export function createDeferredRule<
     RuleName extends string,
     SrcAgentName extends AgentName,

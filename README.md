@@ -98,7 +98,112 @@ console.log("After:", counter.value);  // 1
 
 That's it! You've just created your first Annette application. The counter and incrementer are agents that interact through a rule when connected.
 
+## Scoped Network API (New)
+
+The scoped API creates a bound set of helpers for a single network instance:
+
+```typescript
+import { createNetwork } from 'annette';
+
+const { Agent, withConnections, scope } = createNetwork('app');
+
+const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+  add: (counter) => {
+    counter.value += 1;
+  }
+}, { autoDisconnectMain: true });
+
+scope.reduce(() => {
+  const counter = Counter(0);
+  counter.add();
+  counter.add();
+  console.log(counter.value); // 2
+});
+```
+
+The scoped helpers include factory-based `Agent`, `Port`, `Rule`, and `Connection` utilities so you can stay inside the same network context. Use `autoDisconnectMain` if you plan to queue multiple method calls before stepping.
+
+## Rule DSL (New)
+
+```typescript
+import { createNetwork, consume } from 'annette';
+
+const { Agent, rules, connect, step, fnAgent } = createNetwork('app');
+
+const Counter = Agent.factory<'Counter', number>('Counter');
+const Incrementer = Agent.factory<'Incrementer', number>('Incrementer');
+
+rules.when(Counter, Incrementer)
+  .consume((counter, incrementer) => {
+    counter.value += incrementer.value;
+  });
+
+const ruleList = rules.list({ includeSymmetric: false });
+
+const FnIncrementer = fnAgent(Counter, 'FnIncrementer', consume((counter, incrementer) => {
+  counter.value += incrementer.value;
+}));
+
+const counter = Counter(1);
+const incrementer = Incrementer(2);
+
+connect(counter, incrementer);
+step();
+```
+
+You can also attach pair interactions directly on an agent factory:
+
+```typescript
+import { pair } from 'annette';
+
+withConnections(Counter, {
+  applyIncrement: pair(Incrementer, (counter, incrementer) => {
+    counter.value += incrementer.value;
+  })
+});
+```
+
+## Nested Networks
+
+Agents can hold scoped networks as values and expose explicit stepping rules:
+
+```typescript
+import { createNetwork, asNestedNetwork } from 'annette';
+
+const child = createNetwork('child');
+const { Agent: ChildAgent, withConnections: childConnections } = child;
+
+const Counter = childConnections(ChildAgent.factory<'Counter', number>('Counter'), {
+  add: (counter) => {
+    counter.value += 1;
+  }
+});
+
+const parent = createNetwork('parent');
+const { Agent, withConnections, scope } = parent;
+
+type ChildNetwork = typeof child;
+const nested = asNestedNetwork(child);
+
+const Host = withConnections(Agent.factory<'Host', ChildNetwork>('Host'), {
+  stepInner: (host) => {
+    nested.step();
+  },
+  reduceInner: (host) => {
+    nested.reduce();
+  }
+}, { autoDisconnectMain: true });
+
+scope.reduce(() => {
+  const host = Host(child);
+  const counter = Counter(0);
+  counter.add();
+  host.stepInner();
+});
+```
+
 ## Core Concepts
+
 
 ### Agents
 
@@ -124,7 +229,12 @@ const processor = Agent("Processor", { status: "idle" }, {
   output: Port("output", "aux"),
   control: Port("control", "aux")
 });
+
+// Factory from existing agent
+const ProcessorFactory = Agent.factoryFrom(processor);
+const cloned = ProcessorFactory({ status: "ready" });
 ```
+
 
 **Key Insight**: Agents are like actors in a play - they have a role (name), state (value), and ways to communicate (ports).
 
@@ -136,7 +246,16 @@ const processor = Agent("Processor", { status: "idle" }, {
 // Create different types of ports
 const mainPort = Port("main", "main");    // Main interaction point
 const auxPort = Port("output", "aux");    // Auxiliary connection point
+
+// Convenience helpers
+const mainShortcut = Port.main();
+const auxShortcut = Port.aux("output");
+
+// Factory from existing port
+const PortCopy = Port.factoryFrom(auxPort);
+const cloned = PortCopy();
 ```
+
 
 Each port has:
 - A **name** (like "main", "input", "output")

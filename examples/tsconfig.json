@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "lib": ["ES2021"],
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "noImplicitAny": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "annette": ["../src/scoped-network.ts"]
+    }
+  },
+  "include": ["scoped-network.ts", "rule-dsl.ts", "nested-network.ts"]
+}

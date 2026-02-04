@@ -24,25 +24,29 @@ export { StdLib } from './stdlib';
 
 // Re-export from individual modules for backward compatibility
 // Agent system
-export { Agent, IAgent, AgentId, AgentName, isAgent } from './agent';
+export { Agent, IAgent, AgentId, AgentName, isAgent, createAgentFactoryFrom } from './agent';
+
 
 // Port system
 export {
   Port, IPort, IBoundPort, PortTypes, PortName, PortInstanceKey,
-  BoundPort, getPortInstanceKey, isPort, isBoundPort
+  BoundPort, getPortInstanceKey, isPort, isBoundPort, PortFactory, createPortFactoryFrom
+
 } from './port';
 
 // Connection system
 export {
-  Connection, IConnection, isConnection, ConnectionKey
+  Connection, IConnection, isConnection, ConnectionKey, ConnectionFactory, createConnectionFactoryFrom
+
 } from './connection';
 
 // Rule system
 export {
   ActionRule, RewriteRule, Rule, IRule, IActionRule, IRewriteRule,
-  TrackedAction,
+  TrackedAction, RuleFactory, createRuleFactoryFrom,
   AnyRule, Action, ActionReturn, Rewrite,
   RuleCommand, RuleAddCommand, RuleRemoveCommand
+
 } from './rule';
 
 // Network system
@@ -192,6 +196,9 @@ export {
 } from './optimization';
 
 // =========== Developer Experience Enhancements ===========
+
+export * from './scoped-network';
+
 
 export {
   // Progressive disclosure APIs

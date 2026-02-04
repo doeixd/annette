@@ -20,7 +20,10 @@ This document provides detailed information about the Annette API, organized by 
   - [Reactive System](#reactive-system)
   - [Plugin System](#plugin-system)
 - [Application Layer](#application-layer)
+  - [Scoped Network API](#scoped-network-api)
+  - [Rule DSL](#rule-dsl)
   - [Serialization](#serialization)
+
   - [Distributed Networks](#distributed-networks)
   - [Vector Clocks](#vector-clocks)
   - [Conflict Resolution](#conflict-resolution)
@@ -82,7 +85,16 @@ const processor = Agent("Processor", { status: "idle" }, {
   output: Port("output", "aux"),
   control: Port("control", "aux")
 });
+
+// Factory helper
+const CounterFactory = Agent.factory<"Counter", number>("Counter");
+const instance = CounterFactory(0);
+
+// Factory from existing agent
+const cloneFactory = Agent.factoryFrom(instance);
+const clone = cloneFactory(1);
 ```
+
 
 #### `IAgent<N, V, T>`
 
@@ -123,7 +135,16 @@ const mainPort = Port("main", "main");
 
 // Create an auxiliary port
 const auxPort = Port("output", "aux");
+
+// Convenience factories
+const mainShortcut = Port.main();
+const auxShortcut = Port.aux("output");
+
+// Factory from existing port
+const PortCopy = Port.factoryFrom(auxPort);
+const clone = PortCopy();
 ```
+
 
 #### `IPort`
 
@@ -179,7 +200,12 @@ const conn = Connection(agent1.ports.main, agent2.ports.input);
 
 // Create a connection with an explicit name
 const namedConn = Connection(agent1.ports.output, agent2.ports.input, "data-flow");
+
+// Factory from existing connection
+const ConnFactory = Connection.factoryFrom(namedConn);
+const cloned = ConnFactory(otherSource, otherDest);
 ```
+
 
 #### `IConnection`
 
@@ -243,7 +269,11 @@ const decrementRule = ActionRule(
   }
   // Name auto-generated as: Counter.main-to-Decrement.main
 );
+
+// Factory from existing rule
+const ruleClone = Rule.factoryFrom(incrementRule);
 ```
+
 
 #### `RewriteRule(port1, port2, rewrite, name?)`
 
@@ -1095,7 +1125,106 @@ network.registerPlugin(reactivityPlugin);
 
 The Application Layer provides domain-specific components and high-level APIs.
 
+### Scoped Network API
+
+The scoped API creates a bound set of helpers for a single network instance.
+
+#### `createNetwork(name)`
+
+Creates a scoped network with factory helpers and convenience APIs. `withConnections` returns a typed factory that includes the declared methods.
+
+```typescript
+function createNetwork(name: string): {
+  Agent: typeof Agent & { factory: typeof createAgentFactory };
+  Port: PortFactory;
+  Rule: RuleFactory;
+  Connection: ConnectionFactory;
+  withConnections(factory, methods, options?): void;
+  connect(source, destination, name?): IConnection | undefined;
+  scope: {
+    (cb: () => void): void;
+    step(cb: () => void): void;
+    reduce(cb: () => void): void;
+    manual<T>(cb: (net) => T): T;
+  };
+  derived(factory, compute): (source) => IAgent;
+  storyline(factory, generator): StorylineDefinition;
+  sync(agent, transport, options?): { stop(): void };
+  fnAgent(subject, name, handler): AgentFactory;
+  step(): boolean;
+  reduce(maxSteps?): number;
+};
+
+withConnections supports options:
+
+```typescript
+withConnections(Counter, {
+  add: (counter) => {
+    counter.value += 1;
+  }
+}, { autoDisconnectMain: true });
+```
+
+You can also wrap a scoped network for nested usage:
+
+```typescript
+const nested = asNestedNetwork(child);
+
+nested.step();
+nested.reduce();
+```
+```
+
+**Example:**
+```typescript
+const { Agent, withConnections, scope } = createNetwork('app');
+
+const Counter = withConnections(Agent.factory<'Counter', number>('Counter'), {
+  add: (counter) => {
+    counter.value += 1;
+  }
+});
+
+scope.reduce(() => {
+  const counter = Counter(0);
+  counter.add();
+  counter.add();
+});
+```
+
+### Rule DSL
+
+The rule DSL provides a fluent API for pair interactions.
+
+```typescript
+import { createNetwork, consume, pair } from 'annette';
+
+const { Agent, rules, fnAgent, withConnections } = createNetwork('app');
+
+const Counter = Agent.factory<'Counter', number>('Counter');
+const Incrementer = Agent.factory<'Incrementer', number>('Incrementer');
+
+rules.when(Counter, Incrementer)
+  .consume((counter, incrementer) => {
+    counter.value += incrementer.value;
+  });
+
+const ruleList = rules.list({ includeSymmetric: false });
+// includeSymmetric defaults to true
+
+const FnIncrementer = fnAgent(Counter, 'FnIncrementer', consume((counter, incrementer) => {
+  counter.value += incrementer.value;
+}));
+
+withConnections(Counter, {
+  applyIncrement: pair(Incrementer, (counter, incrementer) => {
+    counter.value += incrementer.value;
+  })
+});
+```
+
 ### Serialization
+
 
 The Serialization system enables storing and transmitting Annette structures.
 
