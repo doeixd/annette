@@ -268,7 +268,16 @@ export {
   DOMRenderer
 } from './reactive/component';
 
+export { renderToGraph } from './dom/render-to-graph';
+export { createOptimizedDomSystem } from './dom/optimized/optimized-dom';
+export { createTopologyStateMachine } from './state-machine/topology';
+export { createEventSystem } from './observer/event-system';
+export { createReifiedEffectSystem } from './reified-effects/effect-system';
+export * as zero from './zero';
+
+
 // =========== Custom Updaters ===========
+
 
 export {
   // Updater definition

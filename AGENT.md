@@ -30,6 +30,10 @@ Annette is a TypeScript implementation of Interaction Nets - a computational mod
 - **Comments**: JSDoc for public APIs, avoid inline comments unless complex
 - **Error Handling**: Use custom error classes extending base `Error`
 - **Testing**: Vitest framework with descriptive test names
-Keep full TypeScript type inference, and dynamism. We want a great developer experience with type safety. Don't be scared of generics, and subtyping. 
-When fixing errors, try to keep all functionality, or if a feature is partially implemented, dont unimplement it, add a comment, and continue to fully implement it. 
-Try and understand the bigger picture, and how your change fits into the overall architecture.
+- **Docs**: Update README or docs when public APIs change
+- **Organization**: Keep new modules under `src/`; DOM helpers live under `src/dom/`
+
+Keep full TypeScript type inference and dynamism. We want a great developer experience with type safety. Don't be scared of generics and subtyping.
+When fixing errors, try to keep all functionality. If a feature is partially implemented, don't unimplement it; add a comment and continue to fully implement it.
+Try to understand the bigger picture and how your change fits into the overall architecture.
+Avoid breaking public APIs unless explicitly requested.

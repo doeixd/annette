@@ -49,7 +49,14 @@ npm install annette
   - [Reactivity](#reactivity)
   - [Distributed Systems](#distributed-systems)
   - [Serialization](#serialization)
+- [Graph Mounting (DOM)](#graph-mounting-dom)
+- [Optimized DOM Blocks](#optimized-dom-blocks)
+- [Zero-Cost Topology](#zero-cost-topology)
+- [Topology State Machines](#topology-state-machines)
+- [Observer Event System](#observer-event-system)
+- [Reified Effects](#reified-effects)
 - [API Reference](#api-reference)
+
   - [Core Engine](#core-engine)
   - [Standard Library](#standard-library)
   - [Application Layer](#application-layer)
@@ -201,6 +208,216 @@ withConnections(Counter, {
   })
 });
 ```
+
+## Graph Mounting (DOM)
+
+`renderToGraph` builds a DOM-backed agent graph from a template tree. Each element becomes an `Element` agent, text becomes a `TextNode`, and attributes become `Attribute` agents connected to the element.
+
+```typescript
+import { Network, renderToGraph } from 'annette';
+
+const network = Network('dom');
+const template = {
+  tag: 'div',
+  attrs: { class: 'card' },
+  children: [
+    { tag: 'h1', children: [{ tag: 'text', text: 'Hello Graph' }] },
+    { tag: 'p', children: [{ tag: 'text', text: 'Mounted with renderToGraph.' }] }
+  ]
+};
+
+const root = renderToGraph(network, template);
+
+if (root.name === 'Element' && root.value.ref) {
+  document.body.appendChild(root.value.ref);
+}
+```
+
+Notes:
+- Requires a browser `document` for DOM creation.
+- Attribute agents are created and connected; syncing them to actual DOM attributes is left to rules or effects.
+
+## Optimized DOM Blocks
+
+`createOptimizedDomSystem` provides Million-style block updates, map-style list diffing, and Solid-like selection. Blocks hold a map of edit nodes, and updates are applied in O(1) via Update agents.
+
+```typescript
+import { createNetwork, createOptimizedDomSystem } from 'annette';
+
+const scope = createNetwork('dom');
+const dom = createOptimizedDomSystem(scope);
+
+const Row = dom.createBlockTemplate<{ label: string }>(
+  `<div class="row"><span class="label"></span></div>`,
+  (root) => ({ label: root.querySelector('.label') as HTMLElement })
+);
+
+const selectionManager = dom.SelectionManager({ selectedClass: 'selected' });
+
+const listManager = dom.createListManager({
+  container: document.body,
+  blockFactory: Row,
+  activeBlocks: new Map(),
+  selectionManager,
+  getUpdates: (item) => [{ key: 'label', value: item.data.label, type: 'text' }]
+});
+
+dom.updateList(listManager, [
+  { id: '1', data: { label: 'Buy Milk' } },
+  { id: '2', data: { label: 'Walk Dog' } }
+]);
+```
+
+Notes:
+- Blocks are agents with an `edits` map used for O(1) patching.
+- `selectBlock` connects the block to the selection manager’s active port.
+
+## Zero-Cost Topology
+
+The `zero` module exposes a functional, zero-cost topology runtime where ports are direct function references. It keeps type inference by modeling ports as typed callables.
+
+```typescript
+import { zero } from 'annette';
+
+const zeroNetwork = zero.createNetwork();
+
+const Counter = zeroNetwork.Agent('Counter', (initial: number) => {
+  let value = initial;
+  const main = zeroNetwork.createPort<number>((delta) => {
+    value += delta;
+  });
+  return { main };
+});
+
+zeroNetwork.run(() => {
+  const counter = Counter(0);
+  const increment = zeroNetwork.createPort<number>((amount) => {
+    counter.main(amount);
+  });
+
+  zeroNetwork.connect(counter.main, increment);
+
+  increment(5);
+});
+```
+
+Notes:
+- `zeroNetwork.run()` scopes hierarchy and cleanup tracking.
+- `zeroNetwork.connect` rewires ports by swapping function pointers.
+- There is no scheduler; ports execute immediately on call.
+- Use `zero.middleware` helpers for recording, sync, and debugging.
+- Use `zero.createFanout`/`zero.createRouter` for high-performance fanout and rewiring.
+
+## Topology State Machines
+
+Topology-based state machines express state as a connected agent rather than a string. The `createTopologyStateMachine` helper wires ActionRules that replace the active state agent while keeping the machine connection intact.
+
+```typescript
+import { createNetwork, createTopologyStateMachine } from 'annette';
+
+const scope = createNetwork('machine');
+const { Agent, Port, connect } = scope;
+
+const Machine = Agent.factory<{ name: string }>('Machine', {
+  ports: { main: Port.main(), aux: Port.aux('aux') }
+});
+
+const Idle = Agent.factory<null>('Idle', {
+  ports: { main: Port.main(), aux: Port.aux('aux') }
+});
+
+const Working = Agent.factory<{ attempt: number }>('Working', {
+  ports: { main: Port.main(), aux: Port.aux('aux') }
+});
+
+const Start = Agent.factory<null>('Start');
+
+const topology = createTopologyStateMachine(scope, {
+  machinePort: 'aux',
+  statePort: 'aux',
+  stateEventPort: 'main',
+  eventPort: 'main'
+});
+
+topology.transition(Idle, Start, Working, {
+  mapValue: () => ({ attempt: 1 })
+});
+
+const machine = Machine({ name: 'Process' });
+const idle = Idle(null);
+
+connect(machine.ports.aux, idle.ports.aux);
+
+topology.dispatch(machine, Start(null));
+console.log(topology.getState(machine)?.name); // Working
+```
+
+Notes:
+- The machine holds the active state via a dedicated port (default `aux`).
+- Events are temporary agents removed by the transition rule.
+
+## Observer Event System
+
+`createEventSystem` models events as a linked list of listener agents. Emitting an event spawns a pulse agent that traverses the chain and triggers callbacks.
+
+```typescript
+import { createNetwork, createEventSystem } from 'annette';
+
+const scope = createNetwork('events');
+const events = createEventSystem(scope);
+
+const onLogin = events.createEvent<{ username: string }>('UserLogin');
+
+events.listen(onLogin, (data) => {
+  console.log(`Email welcome: ${data.username}`);
+});
+
+events.listen(onLogin, (data) => {
+  console.log(`Analytics login: ${data.username}`);
+});
+
+events.emit(onLogin, { username: 'alice' });
+```
+
+Notes:
+- Listener insertion happens at the head of the chain.
+- Pulses are removed after reaching the terminator.
+
+## Reified Effects
+
+`createReifiedEffectSystem` models async work as agents. An `Effect` connects to a `Handler`, which runs the async function and later injects a `Result` or `ErrorResult` back to the requester.
+
+```typescript
+import { createNetwork, createReifiedEffectSystem } from 'annette';
+
+const scope = createNetwork('effects');
+const { Agent, Port, connect, rules } = scope;
+
+const effects = createReifiedEffectSystem(scope);
+
+const Client = Agent.factory<{ data: string | null }>('Client', {
+  ports: { main: Port.main('main'), io: Port.aux('io') }
+});
+
+rules.when(Client, effects.Result).consume((client, result) => {
+  const value = result.value as { data: string };
+  client.value.data = value.data;
+});
+
+const handler = effects.Handler({
+  topic: 'FETCH',
+  fn: async () => 'ok'
+});
+
+const client = Client({ data: null });
+connect(client.ports.io, handler.ports.capability);
+
+effects.requestFrom(client.ports.io, client.ports.main, 'FETCH', { url: '/api' });
+```
+
+Notes:
+- `request` removes the effect after it reaches the handler.
+- Results are injected asynchronously via `scoped.step()`.
 
 ## Storylines
 

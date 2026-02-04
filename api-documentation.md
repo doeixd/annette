@@ -2019,7 +2019,420 @@ render(
 );
 ```
 
+### Graph Mounting (Experimental)
+
+Graph mounting builds a DOM-backed agent graph from a template tree. Elements become `Element` agents, text nodes become `TextNode` agents, and attributes become `Attribute` agents connected to the element.
+
+**Gotchas:**
+- Requires a browser `document` to create DOM nodes.
+- Attribute agents are created and connected; syncing them to actual DOM attributes is left to your rules or effects.
+
+#### `renderToGraph(network, template, parentAgent?)`
+
+```typescript
+type GraphTemplate = {
+  tag: string;
+  attrs?: Record<string, unknown>;
+  children?: GraphTemplate[];
+  text?: string;
+};
+
+function renderToGraph(
+  network: INetwork,
+  template: GraphTemplate,
+  parentAgent?: IAgent | null
+): IAgent;
+```
+
+**Parameters:**
+- `network`: Target network to receive new agents
+- `template`: Template tree to mount
+- `parentAgent`: Optional parent `Element` agent to attach to
+
+**Returns:** The root agent for the mounted template
+
+**Example:**
+```typescript
+import { Network, renderToGraph } from "annette";
+
+const network = Network("dom");
+const template = {
+  tag: "div",
+  attrs: { class: "card" },
+  children: [{ tag: "text", text: "Hello Graph" }]
+};
+
+const root = renderToGraph(network, template);
+
+if (root.name === "Element" && root.value.ref) {
+  document.body.appendChild(root.value.ref);
+}
+```
+
+### Optimized DOM Blocks (Experimental)
+
+Optimized DOM blocks avoid per-node agents by using block agents with O(1) edit maps. List updates use a manager agent for map-style diffing, and selection is modeled by wiring a single active port.
+
+**Gotchas:**
+- Requires a browser `document` for template cloning.
+- `updateList` uses `reduce` internally to apply all patches.
+
+#### `createOptimizedDomSystem(scope)`
+
+```typescript
+type UpdateSpec = { key: string; value: unknown; type: "text" | "attr" | "class" };
+
+type ListItem<T> = { id: string; data: T };
+
+type ListManagerValue<T> = {
+  container: HTMLElement;
+  blockFactory: (item: ListItem<T>) => IAgent;
+  activeBlocks: Map<string, IAgent>;
+  selectionManager?: IAgent;
+  getUpdates?: (item: ListItem<T>, block: IAgent) => UpdateSpec[];
+};
+
+function createOptimizedDomSystem(scope: ScopedNetwork): {
+  createBlockTemplate: <T>(
+    templateHtml: string,
+    getEdits: (root: HTMLElement, item: ListItem<T>) => Record<string, Node>
+  ) => (item: ListItem<T>) => IAgent;
+  createListManager: <T>(options: ListManagerValue<T>) => IAgent;
+  updateList: <T>(manager: IAgent, items: ListItem<T>[]) => boolean;
+  applyUpdates: (block: IAgent, updates: UpdateSpec[]) => void;
+  selectBlock: (block: IAgent) => void;
+  SelectionManager: AgentFactory;
+};
+```
+
+**Example:**
+```typescript
+import { createNetwork, createOptimizedDomSystem } from "annette";
+
+const scope = createNetwork("dom");
+const dom = createOptimizedDomSystem(scope);
+
+const Row = dom.createBlockTemplate<{ label: string }>(
+  `<div class="row"><span class="label"></span></div>`,
+  (root) => ({ label: root.querySelector(".label") as HTMLElement })
+);
+
+const selectionManager = dom.SelectionManager({ selectedClass: "selected" });
+
+const listManager = dom.createListManager({
+  container: document.body,
+  blockFactory: Row,
+  activeBlocks: new Map(),
+  selectionManager,
+  getUpdates: (item) => [{ key: "label", value: item.data.label, type: "text" }]
+});
+
+dom.updateList(listManager, [
+  { id: "1", data: { label: "Buy Milk" } },
+  { id: "2", data: { label: "Walk Dog" } }
+]);
+```
+
+### Zero-Cost Topology (Experimental)
+
+The `zero` submodule exposes a functional runtime where ports are direct function references. It preserves Annette’s topology model without a scheduler while allowing optional hierarchy and cleanup tracking via `zero.createNetwork()`.
+
+#### `zero` API
+
+```typescript
+type ZeroPort<T> = {
+  (data: T): void;
+  _id: string;
+  _handler: (data: T, source?: ZeroPort<any>) => void;
+  _peer: ((data: T, source?: ZeroPort<any>) => void) | null;
+};
+
+type ZeroAgent<Name extends string, Ports> = Ports & { name: Name; __agent?: ZeroAgentInstance };
+
+type ZeroNetwork = {
+  Agent: <Name extends string, State, Ports>(name: Name, factory: (state: State) => Ports) => (state: State) => ZeroAgent<Name, Ports>;
+  createPort: <T>(handler?: (data: T, source?: ZeroPort<any>) => void) => ZeroPort<T>;
+  connect: <T>(a: ZeroPort<T>, b: ZeroPort<T>) => void;
+  onCleanup: (cleanup: () => void) => void;
+  getCurrentAgent: () => ZeroAgentInstance | null;
+  run: <T>(fn: (dispose: () => void) => T) => T;
+  dispose: () => void;
+};
+
+type ZeroFanout<T> = {
+  input: ZeroPort<T>;
+  add: ZeroPort<ZeroPort<T>>;
+  remove: ZeroPort<ZeroPort<T>>;
+  clear: () => void;
+  size: () => number;
+  targets: () => ZeroPort<T>[];
+};
+
+type ZeroRouter<T> = {
+  input: ZeroPort<T>;
+  setTarget: ZeroPort<ZeroPort<T> | null>;
+  getTarget: () => ZeroPort<T> | null;
+};
+
+function createFanout<T>(network: ZeroNetwork): ZeroFanout<T>;
+function createRouter<T>(network: ZeroNetwork): ZeroRouter<T>;
+function connectMany<T>(network: ZeroNetwork, source: ZeroPort<T>, targets: Iterable<ZeroPort<T>>): ZeroFanout<T>;
+
+type ZeroMiddleware = {
+  createRecorder: () => {
+    tape: Array<{ ts: number; from: string; to: string; data: unknown }>;
+    connect: <T>(a: ZeroPort<T>, b: ZeroPort<T>) => void;
+    replay: (resolvePort: (id: string) => ZeroPort<any> | undefined) => void;
+    reset: () => void;
+  };
+  createSyncLayer: (socket: { send: (payload: string) => void; addEventListener: (event: "message", handler: (event: { data: string }) => void) => void; removeEventListener?: (event: "message", handler: (event: { data: string }) => void) => void }) => {
+    connectRemote: <T>(port: ZeroPort<T>, topic: string) => () => void;
+  };
+  createSerializer: () => {
+    trackPort: (port: ZeroPort<any> & { __serialize?: () => { id: string; value: unknown } }) => void;
+    trackAgent: (agent: ZeroAgent<string, Record<string, unknown>>) => void;
+    snapshot: () => Record<string, unknown>;
+    reset: () => void;
+  };
+  connectDebug: <T>(a: ZeroPort<T>, b: ZeroPort<T>, emit: (event: { label?: string; from: string; to: string; data: unknown }) => void, label?: string) => void;
+};
+
+function createNetwork(): ZeroNetwork;
+
+```
+
+**Example:**
+```typescript
+import { zero } from "annette";
+
+const zeroNetwork = zero.createNetwork();
+
+const Counter = zeroNetwork.Agent("Counter", (initial: number) => {
+  let value = initial;
+  const main = zeroNetwork.createPort<number>((delta) => {
+    value += delta;
+  });
+  return { main };
+});
+
+zeroNetwork.run(() => {
+  const counter = Counter(0);
+  const increment = zeroNetwork.createPort<number>((amount) => {
+    counter.main(amount);
+  });
+
+  zeroNetwork.connect(counter.main, increment);
+
+  increment(5);
+});
+```
+
+`zero.middleware` exposes recorder, sync, serializer, and debug helpers that wrap connections.
+
+### Topology State Machines (Experimental)
+
+Topology-based state machines model state as an agent connected to a machine host. Transitions are ActionRules that replace the active state agent and rewire the machine connection.
+
+**Gotchas:**
+- Requires a dedicated machine port (default `aux`) to hold the active state.
+- Events are temporary agents removed when the transition completes.
+
+#### `createTopologyStateMachine(scope, ports?)`
+
+```typescript
+type TopologyPortNames = {
+  machinePort?: string;
+  statePort?: string;
+  stateEventPort?: string;
+  eventPort?: string;
+};
+
+function createTopologyStateMachine(
+  scope: ScopedNetwork,
+  ports?: TopologyPortNames
+): {
+  transition: <StateName extends string, StateValue, EventName extends string, EventValue, NextStateName extends string, NextStateValue>(
+    fromState: AgentFactory<StateName, StateValue>,
+    event: AgentFactory<EventName, EventValue>,
+    toState: AgentFactory<NextStateName, NextStateValue>,
+    options?: {
+      mapValue?: (eventValue: EventValue, stateValue: StateValue) => NextStateValue;
+      ruleName?: string;
+    } & TopologyPortNames
+  ) => IActionRule;
+  dispatch: (machine: IAgent, event: IAgent, overrides?: TopologyPortNames) => boolean;
+  getState: (machine: IAgent, overrides?: TopologyPortNames) => IAgent | null;
+};
+```
+
+**Example:**
+```typescript
+import { createNetwork, createTopologyStateMachine } from "annette";
+
+const scope = createNetwork("machine");
+const { Agent, Port, connect } = scope;
+
+const Machine = Agent.factory<{ name: string }>("Machine", {
+  ports: { main: Port.main(), aux: Port.aux("aux") }
+});
+
+const Idle = Agent.factory<null>("Idle", {
+  ports: { main: Port.main(), aux: Port.aux("aux") }
+});
+
+const Working = Agent.factory<{ attempt: number }>("Working", {
+  ports: { main: Port.main(), aux: Port.aux("aux") }
+});
+
+const Start = Agent.factory<null>("Start");
+
+const topology = createTopologyStateMachine(scope);
+
+topology.transition(Idle, Start, Working, {
+  mapValue: () => ({ attempt: 1 })
+});
+
+const machine = Machine({ name: "Process" });
+const idle = Idle(null);
+
+connect(machine.ports.aux, idle.ports.aux);
+
+topology.dispatch(machine, Start(null));
+console.log(topology.getState(machine)?.name);
+```
+
+### Observer Event System (Experimental)
+
+The observer event system represents listeners as a linked list of agents. Emitting an event spawns a pulse agent that walks the chain, firing callbacks, and is removed when it reaches the terminator.
+
+**Gotchas:**
+- `listen` inserts new listeners at the head of the list.
+- Emissions default to `reduce`, so the pulse traverses the entire chain.
+
+#### `createEventSystem(scope, ports?)`
+
+```typescript
+type ObserverPortNames = {
+  channelNext?: string;
+  listenerPrev?: string;
+  listenerNext?: string;
+  listenerVisitor?: string;
+  terminatorPrev?: string;
+  terminatorVisitor?: string;
+  pulseMain?: string;
+};
+
+type ObserverEmitOptions = {
+  mode?: "step" | "reduce";
+  maxSteps?: number;
+};
+
+function createEventSystem(scope: ScopedNetwork, ports?: ObserverPortNames): {
+  createEvent: <Payload>(name: string) => IAgent;
+  listen: <Payload>(channel: IAgent, callback: (payload: Payload) => void) => IAgent;
+  emit: <Payload>(channel: IAgent, payload: Payload, options?: ObserverEmitOptions) => boolean;
+  getListeners: (channel: IAgent) => IAgent[];
+};
+```
+
+**Example:**
+```typescript
+import { createNetwork, createEventSystem } from "annette";
+
+const scope = createNetwork("events");
+const events = createEventSystem(scope);
+
+const onLogin = events.createEvent<{ username: string }>("UserLogin");
+
+events.listen(onLogin, (data) => {
+  console.log(`Email welcome: ${data.username}`);
+});
+
+events.listen(onLogin, (data) => {
+  console.log(`Analytics login: ${data.username}`);
+});
+
+events.emit(onLogin, { username: "alice" });
+```
+
+### Reified Effects (Experimental)
+
+Reified effects model async work as agents. Effects connect to handlers, handlers run the async function, and results are injected back into the network later.
+
+**Gotchas:**
+- `request` removes the effect after the handler accepts it.
+- Results are injected asynchronously via `scoped.step()`.
+
+#### `createReifiedEffectSystem(scope, ports?)`
+
+```typescript
+type ReifiedEffectPortNames = {
+  effectMain?: string;
+  effectReply?: string;
+  handlerMain?: string;
+  handlerCapability?: string;
+  resultMain?: string;
+  errorMain?: string;
+};
+
+type EffectEmitOptions = {
+  mode?: "step" | "reduce";
+  maxSteps?: number;
+};
+
+function createReifiedEffectSystem(scope: ScopedNetwork, ports?: ReifiedEffectPortNames): {
+  Effect: AgentFactory;
+  Handler: AgentFactory;
+  Result: AgentFactory;
+  ErrorResult: AgentFactory;
+  request: <Payload>(
+    handler: IAgent | IBoundPort,
+    replyPort: IBoundPort,
+    type: string,
+    payload: Payload,
+    options?: EffectEmitOptions
+  ) => IAgent;
+  requestFrom: <Payload>(
+    connectedPort: IBoundPort,
+    replyPort: IBoundPort,
+    type: string,
+    payload: Payload,
+    options?: EffectEmitOptions
+  ) => IAgent;
+};
+```
+
+**Example:**
+```typescript
+import { createNetwork, createReifiedEffectSystem } from "annette";
+
+const scope = createNetwork("effects");
+const { Agent, Port, connect, rules } = scope;
+
+const effects = createReifiedEffectSystem(scope);
+
+const Client = Agent.factory<{ data: string | null }>("Client", {
+  ports: { main: Port.main("main"), io: Port.aux("io") }
+});
+
+rules.when(Client, effects.Result).consume((client, result) => {
+  const value = result.value as { data: string };
+  client.value.data = value.data;
+});
+
+const handler = effects.Handler({
+  topic: "FETCH",
+  fn: async () => "ok"
+});
+
+const client = Client({ data: null });
+connect(client.ports.io, handler.ports.capability);
+
+effects.requestFrom(client.ports.io, client.ports.main, "FETCH", { url: "/api" });
+```
+
 ### Custom Updaters
+
 
 The Custom Updaters system enables defining domain-specific updaters.
 
