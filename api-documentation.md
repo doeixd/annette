@@ -62,9 +62,9 @@ Annette APIs are organized by layer (core → standard library → application).
 
 **Quiescent state:** A network is quiescent when `step()` returns `false` (no active pair with an applicable rule). In scoped APIs, pending work is executed only when the scope finishes.
 
-**Replayability:** Time travel stores snapshots of agent values and connections (rules are not snapshotted). Sync operations are built from tracked change history. Only `TrackedAction` and updater-based changes are guaranteed to be replayable across replicas.
+**Replayability:** Time travel stores snapshots of agent values and connections (rules are not snapshotted). Sync operations are built from tracked change history. Only `TrackedAction` and updater-based changes (including shared map/list/text/counter updaters) are guaranteed to produce equivalent operation logs across replicas.
 
-**Confluence:** For interaction-net-style rewrites that satisfy the usual confluence conditions, reduction order does not affect the normal form. Annette does not enforce these conditions; side effects and external I/O can break convergence.
+**Confluence:** For interaction-net-style rewrites that satisfy the usual confluence conditions, reduction order does not affect the normal form. Annette does not enforce these conditions; arbitrary `ActionRule` side effects, non-deterministic logic, or external I/O can break convergence.
 
 ## Core Engine Layer
 
@@ -829,11 +829,19 @@ function SyncNetwork(
   name: string,
   nodeId: string,
   agents?: IAgent[]
-): INetwork & { 
-  nodeId: string,
-  collectOperations(since?: number): SyncOperation[],
-  applyOperations(operations: SyncOperation[]): void
+): INetwork & {
+  nodeId: string;
+
+  /**
+   * Returns operations produced locally since a per-source sequence number.
+   * `since` refers to `SyncOperation.seq` for this network's `nodeId`.
+   */
+  collectOperations(sinceSeq?: number): SyncOperation[];
+
+  /** Applies a batch of remote operations idempotently. */
+  applyOperations(operations: SyncOperation[]): void;
 };
+
 ```
 
 **Parameters:**
@@ -843,11 +851,16 @@ function SyncNetwork(
 
 **Returns:** A network with sync capabilities
 
+**Gotchas:**
+- `collectOperations(sinceSeq)` is per-source. Track one cursor per `source` when syncing with multiple peers.
+- `timestamp` is informational; ordering is by `(source, seq)` within a source, and by vector-clock/conflict strategy across sources.
+
 **Example:**
 ```typescript
 // Create a sync network
 const clientNet = SyncNetwork("client-app", "client-123");
 ```
+
 
 #### `registerSyncRules(network)`
 
@@ -877,10 +890,14 @@ Adds connection history capabilities to a network.
 ```typescript
 function enableConnectionHistory(network: INetwork): INetwork & {
   takeReductionSnapshot(description?: string): ReductionSnapshot;
-  getChangesSince(version: number): VersionedChange[];
-  rollbackToVersion(version: number): void;
+
+  /** Monotonic local history index (NOT related to SyncOperation.schemaVersion). */
+  getChangesSince(historyVersion: number): VersionedChange[];
+
+  rollbackToVersion(historyVersion: number): void;
   applyChanges(changes: VersionedChange[]): void;
 };
+
 ```
 
 **Parameters:**
@@ -898,7 +915,8 @@ const historyNet = enableConnectionHistory(net);
 const snapshot = historyNet.takeReductionSnapshot("Initial state");
 
 // Later, roll back to that version
-historyNet.rollbackToVersion(snapshot.version);
+historyNet.rollbackToVersion(snapshot.version); // snapshot.version is a local history index
+
 ```
 
 ### Specialized Updaters
@@ -1543,12 +1561,36 @@ The Distributed Networks system enables communication between separate networks 
 
 ```typescript
 type SyncOperation = {
-  type: 'agent-update' | 'agent-create' | 'agent-delete' | 'connection-create' | 'connection-delete' | 'snapshot';
-  data: any;
+  /** Schema version for this operation payload shape. */
+  schemaVersion: 1;
+
+  /**
+   * Monotonic sequence number for this operation stream, per `source`.
+   * Used for pagination ("since") and de-duplication.
+   */
+  seq: number;
+
+  /**
+   * Stable id for the node/client that produced this op.
+   * (Used with `seq` to establish ordering within a source stream.)
+   */
   source: string;
+
+  /** Wall-clock time for debugging/telemetry only (do not rely on for ordering). */
   timestamp: number;
-  version: number;
+
+  /** Globally unique id for idempotency across transports. */
   id: string;
+
+  type:
+    | 'agent-update'
+    | 'agent-create'
+    | 'agent-delete'
+    | 'connection-create'
+    | 'connection-delete'
+    | 'snapshot';
+
+  data: any;
 };
 ```
 
@@ -1562,7 +1604,8 @@ type SyncOperation = {
 - Use consistent `source` values per client to avoid replaying local operations.
 - If transports reorder operations, rely on vector clocks + conflict resolver to reconcile.
 - Vector clocks live at a higher layer than `SyncOperation` (they are not embedded in the operation payload).
-- `version` on `SyncOperation` is a schema version (currently `1`). Sequence-style APIs like `collectOperations(since)` or `getChangesSince(version)` refer to change-history indices, not this field.
+- `schemaVersion` is the payload schema version (currently `1`).
+- `seq` is the monotonic per-source operation index; this is what `since` refers to.
 
 #### `createDistributedNetworkServer(options)`
 
