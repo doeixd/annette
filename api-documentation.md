@@ -56,15 +56,15 @@ Annette APIs are organized by layer (core → standard library → application).
 
 ## Semantics & Guarantees
 
-**`step()` selection:** One interaction is chosen from the current active connections. Internally the network iterates the active-pair set in insertion order and executes the first match. If creation order differs, the chosen pair can differ.
+**`step()` selection:** One interaction is chosen from the current active pair set. Internally the network iterates the active-pair set in insertion order and executes the first match. If creation order differs, the chosen pair can differ.
 
 **Determinism:** Given identical agent/connection insertion order and pure rule handlers, reductions are deterministic. Non-deterministic logic or different insertion order can diverge.
 
 **Quiescent state:** A network is quiescent when `step()` returns `false` (no active pair with an applicable rule). In scoped APIs, pending work is executed only when the scope finishes.
 
-**Replayability:** Time travel stores snapshots of agent values and connections. Sync operations are built from tracked change history. Only `TrackedAction` and updater-based changes are guaranteed to be replayable across replicas.
+**Replayability:** Time travel stores snapshots of agent values and connections (rules are not snapshotted). Sync operations are built from tracked change history. Only `TrackedAction` and updater-based changes are guaranteed to be replayable across replicas.
 
-**Confluence:** Confluence applies to pure interaction-net reductions; arbitrary `ActionRule` side effects or external I/O can break convergence.
+**Confluence:** For interaction-net-style rewrites that satisfy the usual confluence conditions, reduction order does not affect the normal form. Annette does not enforce these conditions; side effects and external I/O can break convergence.
 
 ## Core Engine Layer
 
@@ -657,7 +657,7 @@ The Effect system provides algebraic effects for handling asynchronous operation
 **Effect flow:**
 - An `EffectAgent` is introduced with a description payload.
 - A `HandlerAgent` matches by effect `type` and returns a value or promise.
-- A `ResultAgent` (or error agent) is created and connected back.
+- A result (or error) agent is created and connected back.
 - `ResultScanner` collects or forwards results.
 
 
@@ -1562,7 +1562,7 @@ type SyncOperation = {
 - Use consistent `source` values per client to avoid replaying local operations.
 - If transports reorder operations, rely on vector clocks + conflict resolver to reconcile.
 - Vector clocks live at a higher layer than `SyncOperation` (they are not embedded in the operation payload).
-- `version` is currently a schema version for the operation payload (currently `1`), not a global counter.
+- `version` on `SyncOperation` is a schema version (currently `1`). Sequence-style APIs like `collectOperations(since)` or `getChangesSince(version)` refer to change-history indices, not this field.
 
 #### `createDistributedNetworkServer(options)`
 
